@@ -4,10 +4,15 @@
   "private": true,
   "description": "Облік надходжень і витрат роти за категоріями потреб",
   "main": "server.js",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "test": "node --disable-warning=ExperimentalWarning --test"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
 }
