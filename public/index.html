@@ -7,6 +7,7 @@
   <title>Облік роти</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234a5d23'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif'%3E%E2%82%B4%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
+  <script src="/theme.js"></script>
 </head>
 <body>
   <!-- Вхід -->
@@ -22,6 +23,12 @@
       </label>
       <button type="submit" class="primary">Увійти</button>
       <p id="login-error" class="error" role="alert"></p>
+      <div class="theme-row"><select class="theme-select" aria-label="Тема оформлення" title="Тема оформлення">
+          <option value="auto">Як на пристрої</option>
+          <option value="light">Світла</option>
+          <option value="dark">Темна зелена</option>
+          <option value="graphite">Темна сіра</option>
+        </select></div>
     </form>
   </section>
 
@@ -37,6 +44,12 @@
         <button data-tab="audit" data-admin>Журнал</button>
       </nav>
       <div class="me">
+        <select class="theme-select" aria-label="Тема оформлення" title="Тема оформлення">
+          <option value="auto">Як на пристрої</option>
+          <option value="light">Світла</option>
+          <option value="dark">Темна зелена</option>
+          <option value="graphite">Темна сіра</option>
+        </select>
         <button id="me-btn" class="link" title="Змінити пароль"><span id="me-name"></span> <span class="badge" id="me-role"></span></button>
         <button id="logout" class="ghost">Вийти</button>
       </div>

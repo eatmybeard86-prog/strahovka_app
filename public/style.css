@@ -11,8 +11,9 @@
   --row-hover: #f8f9f4;
   color-scheme: light;
 }
+/* Тема: «Авто» йде за налаштуваннями пристрою; вибір користувача зберігається в браузері. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #15170f;
     --card: #1e2117;
     --text: #e8eadf;
@@ -25,6 +26,32 @@
     --row-hover: #252a1c;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #15170f;
+    --card: #1e2117;
+    --text: #e8eadf;
+    --muted: #9da38f;
+    --border: #33382a;
+    --accent: #7d9a3c;
+    --accent-hover: #8fae47;
+    --income: #5cc27a;
+    --expense: #f07a6f;
+    --row-hover: #252a1c;
+    color-scheme: dark;
+}
+:root[data-theme="graphite"] {
+    --bg: #18191b;
+    --card: #222326;
+    --text: #e6e7e9;
+    --muted: #9b9ea4;
+    --border: #35373b;
+    --accent: #8fae47;
+    --accent-hover: #a3c25a;
+    --income: #5cc27a;
+    --expense: #f07a6f;
+    --row-hover: #2a2c30;
+    color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body {
@@ -127,6 +154,9 @@ tr.archived td { color: var(--muted); }
   .tabs { order: 3; flex-basis: 100%; }
   .me { margin-left: auto; }
   #me-role { display: none; }
+  #me-name { display: none; }
+  #me-btn::after { content: "Пароль"; }
+  .theme-select { max-width: 150px; }
   .toolbar label { width: calc(50% - 5px); }
   .toolbar label.grow { width: 100%; }
   .desc { max-width: 200px; }
@@ -147,3 +177,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .4); }
 .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; }
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: .95rem; }
 label.check input { width: auto; min-height: 0; }
+
+/* Перемикач теми */
+.theme-select { width: auto; min-height: 34px; padding: 4px 8px; font-size: .88rem; }
+.login-card .theme-row { display: flex; justify-content: flex-end; }
