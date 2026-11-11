@@ -1,0 +1,31 @@
+# Blueprint для Render: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: oblik-roty
+    runtime: node
+    region: frankfurt
+    # Постійний диск доступний лише на платних планах. Без нього база
+    # стиратиметься при кожному перезапуску, тому план не нижче starter.
+    plan: starter
+    buildCommand: "true"
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: oblik-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: ADMIN_LOGIN
+        value: admin
+      # Пароль першого адміністратора: Render попросить ввести його під час створення.
+      - key: ADMIN_PASSWORD
+        sync: false

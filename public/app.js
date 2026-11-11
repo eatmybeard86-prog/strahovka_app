@@ -9,6 +9,11 @@ const dateFmt = (iso) => iso.split('-').reverse().join('.');
 const pad = (n) => String(n).padStart(2, '0');
 const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const today = () => isoDate(new Date());
+// Час з бази зберігається в UTC; показуємо в місцевому.
+const dateTimeFmt = (s) => {
+  const d = new Date(s.replace(' ', 'T') + 'Z');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -34,32 +39,48 @@ async function api(path, opts = {}) {
   return data;
 }
 
+let me = null;
+let roles = {};
 let categories = [];
 let editingId = null;
+let editingUserId = null;
+
+const isAdmin = () => me?.role === 'admin';
+const canEdit = () => me && (me.role === 'admin' || me.role === 'editor');
+const canUseCategory = (id) => canEdit() && (!me.categories || me.categories.includes(Number(id)));
 
 // ---------- Вхід / вихід ----------
 function showLogin() {
+  me = null;
   $('#app-view').hidden = true;
   $('#login-view').hidden = false;
-  $('#login-form [name=password]').focus();
+  $('#login-form [name=login]').focus();
 }
-async function showApp() {
+async function showApp(session) {
+  me = session.user;
+  roles = session.roles;
   $('#login-view').hidden = true;
   $('#app-view').hidden = false;
+  $('#me-name').textContent = me.name;
+  $('#me-role').textContent = roles[me.role];
+  $$('[data-admin]').forEach((n) => { n.hidden = !isAdmin(); });
+  $('#tx-form').hidden = !canEdit();
+  switchTab('summary');
+  resetTxForm();
   await loadCategories();
   await Promise.all([loadSummary(), loadTransactions()]);
 }
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const input = e.target.password;
+  const f = e.target;
   $('#login-error').textContent = '';
   try {
-    await api('/api/login', { method: 'POST', body: { password: input.value } });
-    input.value = '';
-    await showApp();
+    await api('/api/login', { method: 'POST', body: { login: f.login.value, password: f.password.value } });
+    f.password.value = '';
+    await showApp(await api('/api/session'));
   } catch (err) {
     $('#login-error').textContent = err.message;
-    input.select();
+    f.password.select();
   }
 });
 $('#logout').addEventListener('click', async () => {
@@ -67,24 +88,43 @@ $('#logout').addEventListener('click', async () => {
   showLogin();
 });
 
+// ---------- Зміна власного пароля ----------
+const pwDialog = $('#pw-dialog');
+$('#me-btn').addEventListener('click', () => { $('#pw-form').reset(); $('#pw-error').textContent = ''; pwDialog.showModal(); });
+$('#pw-cancel').addEventListener('click', () => pwDialog.close());
+$('#pw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  if (f.password.value !== f.password2.value) { $('#pw-error').textContent = 'Нові паролі не збігаються'; return; }
+  try {
+    await api('/api/me/password', { method: 'POST', body: { current: f.current.value, password: f.password.value } });
+    pwDialog.close();
+    alert('Пароль змінено.');
+  } catch (err) { $('#pw-error').textContent = err.message; }
+});
+
 // ---------- Вкладки ----------
-$$('.tabs button').forEach((btn) => btn.addEventListener('click', () => {
-  $$('.tabs button').forEach((b) => b.classList.toggle('active', b === btn));
-  $$('.tab').forEach((t) => { t.hidden = t.id !== 'tab-' + btn.dataset.tab; });
-  if (btn.dataset.tab === 'summary') loadSummary();
-}));
+function switchTab(name) {
+  $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  $$('.tab').forEach((t) => { t.hidden = t.id !== 'tab-' + name; });
+  if (name === 'summary' && me) loadSummary();
+  if (name === 'users') loadUsers();
+  if (name === 'audit') loadAudit();
+}
+$$('.tabs button').forEach((btn) => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
 // ---------- Категорії ----------
 async function loadCategories() {
-  categories = await api('/api/categories');
+  categories = (await api('/api/categories'))
+    .sort((a, b) => a.archived - b.archived || a.name.localeCompare(b.name, 'uk'));
   renderCategorySelects();
-  renderCategoryTable();
+  if (isAdmin()) renderCategoryTable();
 }
 function renderCategorySelects() {
   const formSel = $('#tx-form [name=category_id]');
   const current = formSel.value;
   formSel.replaceChildren(el('option', { value: '' }, '— оберіть —'),
-    ...categories.filter((c) => !c.archived || String(c.id) === current)
+    ...categories.filter((c) => (!c.archived || String(c.id) === current) && canUseCategory(c.id))
       .map((c) => el('option', { value: c.id }, c.name)));
   formSel.value = current;
 
@@ -192,7 +232,9 @@ function editTx(t) {
 }
 async function deleteTx(t) {
   if (!confirm(`Видалити операцію від ${dateFmt(t.date)} на ${money(t.amount)}?`)) return;
-  await api('/api/transactions/' + t.id, { method: 'DELETE' });
+  try {
+    await api('/api/transactions/' + t.id, { method: 'DELETE' });
+  } catch (err) { alert(err.message); return; }
   if (editingId === t.id) resetTxForm();
   await Promise.all([loadTransactions(), loadCategories()]);
 }
@@ -204,6 +246,12 @@ function filterQuery() {
   add('type', $('#f-type').value); add('category_id', $('#f-cat').value);
   add('q', $('#f-q').value.trim());
   return p.toString();
+}
+function authorCell(t) {
+  const who = t.created_by_name || '—';
+  const title = t.updated_by_name && t.updated_at !== t.created_at
+    ? `Змінив: ${t.updated_by_name}, ${dateTimeFmt(t.updated_at)}` : `Внесено ${dateTimeFmt(t.created_at)}`;
+  return el('td', { class: 'muted small', title }, who);
 }
 async function loadTransactions() {
   const rows = await api('/api/transactions?' + filterQuery());
@@ -218,9 +266,11 @@ async function loadTransactions() {
     el('td', {}, t.counterparty),
     el('td', { class: 'desc' }, t.description),
     el('td', { class: 'num nowrap ' + t.type }, (t.type === 'income' ? '+' : '−') + money(t.amount)),
-    el('td', { class: 'row-actions' },
+    authorCell(t),
+    el('td', { class: 'row-actions' }, canUseCategory(t.category_id) ? [
       el('button', { class: 'link', onclick: () => editTx(t) }, 'Змінити'),
-      el('button', { class: 'link danger', onclick: () => deleteTx(t) }, 'Видалити')),
+      el('button', { class: 'link danger', onclick: () => deleteTx(t) }, 'Видалити'),
+    ] : []),
   )));
 }
 let searchTimer;
@@ -229,7 +279,7 @@ $('#f-q').addEventListener('input', () => { clearTimeout(searchTimer); searchTim
 $('#export').addEventListener('click', () => { window.location.href = '/api/export.csv?' + filterQuery(); });
 
 // ---------- Звіт ----------
-function setPreset(kind) {
+function setPeriod(kind) {
   const now = new Date();
   let from = ''; let to = '';
   if (kind === 'month') { from = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); to = isoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)); }
@@ -238,9 +288,8 @@ function setPreset(kind) {
   $('#sum-from').value = from;
   $('#sum-to').value = to;
   $$('.presets button').forEach((b) => b.classList.toggle('active', b.dataset.preset === kind));
-  loadSummary();
 }
-$$('.presets button').forEach((b) => b.addEventListener('click', () => setPreset(b.dataset.preset)));
+$$('.presets button').forEach((b) => b.addEventListener('click', () => { setPeriod(b.dataset.preset); loadSummary(); }));
 ['#sum-from', '#sum-to'].forEach((s) => $(s).addEventListener('change', () => {
   $$('.presets button').forEach((b) => b.classList.remove('active'));
   loadSummary();
@@ -275,15 +324,118 @@ async function loadSummary() {
   ));
 }
 
-// ---------- Старт ----------
-resetTxForm();
-setPresetSilently('month');
-function setPresetSilently(kind) {
-  const now = new Date();
-  $('#sum-from').value = isoDate(new Date(now.getFullYear(), now.getMonth(), 1));
-  $('#sum-to').value = isoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
-  $$('.presets button').forEach((b) => b.classList.toggle('active', b.dataset.preset === kind));
+// ---------- Користувачі ----------
+const userForm = $('#user-form');
+let users = [];
+function renderUserCats(selected = []) {
+  $('#user-cats-list').replaceChildren(...categories.filter((c) => !c.archived || selected.includes(c.id))
+    .map((c) => el('label', { class: 'check' },
+      el('input', { type: 'checkbox', value: c.id, checked: selected.includes(c.id) }), c.name)));
 }
+function updateUserCatsVisibility() { $('#user-cats').hidden = userForm.role.value !== 'editor'; }
+userForm.role.addEventListener('change', updateUserCatsVisibility);
+
+function resetUserForm() {
+  editingUserId = null;
+  userForm.reset();
+  userForm.login.disabled = false;
+  userForm.password.required = true;
+  $('#user-pw-label').textContent = 'Пароль (щонайменше 8 символів)';
+  $('#user-form-title').textContent = 'Новий користувач';
+  $('#user-submit').textContent = 'Створити';
+  $('#user-cancel').hidden = true;
+  $('#user-error').textContent = '';
+  renderUserCats();
+  updateUserCatsVisibility();
+}
+$('#user-cancel').addEventListener('click', resetUserForm);
+
+function editUser(u) {
+  editingUserId = u.id;
+  userForm.login.value = u.login;
+  userForm.login.disabled = true;
+  userForm.name.value = u.name;
+  userForm.role.value = u.role;
+  userForm.password.value = '';
+  userForm.password.required = false;
+  $('#user-pw-label').textContent = 'Новий пароль (залиште порожнім, щоб не змінювати)';
+  $('#user-form-title').textContent = 'Редагування: ' + u.name;
+  $('#user-submit').textContent = 'Зберегти';
+  $('#user-cancel').hidden = false;
+  $('#user-error').textContent = '';
+  renderUserCats(u.categories);
+  updateUserCatsVisibility();
+  userForm.scrollIntoView({ behavior: 'smooth' });
+}
+
+userForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#user-error').textContent = '';
+  const body = {
+    name: userForm.name.value,
+    role: userForm.role.value,
+    categories: $$('#user-cats-list input:checked').map((i) => Number(i.value)),
+  };
+  if (userForm.password.value) body.password = userForm.password.value;
+  try {
+    if (editingUserId) {
+      await api('/api/users/' + editingUserId, { method: 'PUT', body });
+      if (editingUserId === me.id) await refreshMe();
+    } else {
+      await api('/api/users', { method: 'POST', body: { ...body, login: userForm.login.value } });
+    }
+    resetUserForm();
+    await loadUsers();
+  } catch (err) { $('#user-error').textContent = err.message; }
+});
+
+async function toggleUser(u) {
+  const verb = u.active ? 'Вимкнути' : 'Увімкнути';
+  if (!confirm(`${verb} користувача ${u.name}?`)) return;
+  try {
+    await api('/api/users/' + u.id, { method: 'PUT', body: { active: !u.active } });
+    await loadUsers();
+  } catch (err) { $('#user-error').textContent = err.message; }
+}
+
+async function loadUsers() {
+  if (!isAdmin()) return;
+  if (!editingUserId) resetUserForm();
+  users = await api('/api/users');
+  const catName = (id) => categories.find((c) => c.id === id)?.name ?? '?';
+  $('#user-body').replaceChildren(...users.map((u) => el('tr', { class: u.active ? '' : 'archived' },
+    el('td', {}, u.name, u.id === me.id ? el('span', { class: 'muted' }, ' (ви)') : ''),
+    el('td', {}, u.login),
+    el('td', {}, roles[u.role]),
+    el('td', { class: 'small' }, u.role !== 'editor' ? '—' : (u.categories.length ? u.categories.map(catName).join(', ') : 'усі')),
+    el('td', {}, u.active ? 'Активний' : 'Вимкнений'),
+    el('td', { class: 'row-actions' },
+      el('button', { class: 'link', onclick: () => editUser(u) }, 'Змінити'),
+      u.id === me.id ? '' : el('button', { class: 'link' + (u.active ? ' danger' : ''), onclick: () => toggleUser(u) },
+        u.active ? 'Вимкнути' : 'Увімкнути')),
+  )));
+}
+async function refreshMe() {
+  const s = await api('/api/session');
+  me = s.user;
+  $('#me-name').textContent = me.name;
+  $('#me-role').textContent = roles[me.role];
+  if (!isAdmin()) await showApp(s);
+}
+
+// ---------- Журнал ----------
+async function loadAudit() {
+  const rows = await api('/api/audit');
+  $('#audit-body').replaceChildren(...(rows.length ? rows.map((r) => el('tr', {},
+    el('td', { class: 'nowrap' }, dateTimeFmt(r.at)),
+    el('td', {}, r.user_name),
+    el('td', {}, r.action),
+    el('td', { class: 'desc small' }, r.details),
+  )) : [el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Записів ще немає.'))]));
+}
+
+// ---------- Старт ----------
+setPeriod('month');
 fetch('/api/session', { credentials: 'same-origin' })
-  .then((r) => (r.ok ? showApp() : showLogin()))
+  .then((r) => (r.ok ? r.json().then(showApp) : showLogin()))
   .catch(showLogin);
