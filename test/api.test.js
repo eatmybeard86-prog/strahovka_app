@@ -7,7 +7,9 @@ const path = require('node:path');
 
 process.env.ADMIN_PASSWORD = 'admin-pass-123';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'oblik-'));
-const { server } = require('../server.js');
+// Для перевірки на PostgreSQL: TEST_DATABASE_URL=postgres://… npm test (база має бути порожньою).
+if (process.env.TEST_DATABASE_URL) process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+const { server, init, getDb } = require('../server.js');
 
 let base;
 // Окремий «браузер» для кожного користувача.
@@ -31,8 +33,11 @@ const editor = client();
 const viewer = client();
 let fuel; let food;
 
-test.before(() => new Promise((r) => server.listen(0, () => { base = `http://127.0.0.1:${server.address().port}`; r(); })));
-test.after(() => server.close());
+test.before(async () => {
+  await init();
+  await new Promise((r) => server.listen(0, () => { base = `http://127.0.0.1:${server.address().port}`; r(); }));
+});
+test.after(async () => { server.close(); await getDb().close(); });
 
 test('без входу API закрите', async () => {
   const anon = client();
