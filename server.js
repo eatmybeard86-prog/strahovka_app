@@ -172,10 +172,11 @@ async function audit(user, action, details = '') {
 }
 
 // ---------- Права ----------
-// Глядач («лише перегляд») не бачить, де і в кого лежать кошти та в якій формі.
+// Глядач («лише перегляд») бачить лише форму коштів (готівка / безготівка):
+// без назв рахунків (у кого і де лежать) і без опису операцій.
 const seesAccounts = (user) => user.role !== 'viewer';
-const ACCOUNT_FIELDS = ['account_id', 'account', 'account_kind'];
-const hideAccounts = (rows) => rows.map((r) => { const o = { ...r }; for (const k of ACCOUNT_FIELDS) delete o[k]; return o; });
+const HIDDEN_FOR_VIEWER = ['account_id', 'account', 'description'];
+const forViewer = (rows) => rows.map((r) => { const o = { ...r }; for (const k of HIDDEN_FOR_VIEWER) delete o[k]; return o; });
 
 function requireRole(user, ...roles) {
   if (!roles.includes(user.role)) throw new HttpError(403, 'Недостатньо прав для цієї дії');
@@ -207,7 +208,7 @@ async function validateTx(body, user) {
     description: cleanText(body.description, 1000),
   };
 }
-function txFilters(q) {
+function txFilters(q, limited = false) {
   const where = [];
   const params = [];
   const add = (cond, value) => { params.push(value); where.push(cond.replace('?', '$' + params.length)); };
@@ -215,18 +216,19 @@ function txFilters(q) {
   if (isDate(q.get('to'))) add('t.date <= ?', q.get('to'));
   if (['income', 'expense'].includes(q.get('type'))) add('t.type = ?', q.get('type'));
   if (toId(q.get('category_id'))) add('t.category_id = ?', toId(q.get('category_id')));
-  if (q.get('account_id') === 'none') where.push('t.account_id IS NULL');
-  else if (toId(q.get('account_id'))) add('t.account_id = ?', toId(q.get('account_id')));
+  if (!limited && q.get('account_id') === 'none') where.push('t.account_id IS NULL');
+  else if (!limited && toId(q.get('account_id'))) add('t.account_id = ?', toId(q.get('account_id')));
+  if (['cash', 'cashless'].includes(q.get('kind'))) add('a.kind = ?', q.get('kind'));
   const search = cleanText(q.get('q'), 100);
   if (search) {
     params.push(`%${search}%`);
     const n = '$' + params.length;
-    where.push(`(t.description ${db.like} ${n} OR t.counterparty ${db.like} ${n})`);
+    where.push(limited ? `t.counterparty ${db.like} ${n}` : `(t.description ${db.like} ${n} OR t.counterparty ${db.like} ${n})`);
   }
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', params };
 }
-function listTx(q) {
-  const f = txFilters(q);
+function listTx(q, limited = false) {
+  const f = txFilters(q, limited);
   return db.all(`
     SELECT t.id, t.date, t.type, t.amount, t.category_id, c.name AS category,
            t.account_id, a.name AS account, a.kind AS account_kind,
@@ -468,9 +470,9 @@ async function api(req, res, url) {
 
   // Операції: переглядати можуть усі, вносити — адміністратор і редактор.
   if (p === '/api/transactions' && m === 'GET') {
-    if (!seesAccounts(user)) url.searchParams.delete('account_id');
-    const rows = await listTx(url.searchParams);
-    return send(res, 200, seesAccounts(user) ? rows : hideAccounts(rows));
+    const full = seesAccounts(user);
+    const rows = await listTx(url.searchParams, !full);
+    return send(res, 200, full ? rows : forViewer(rows));
   }
   if (p === '/api/transactions' && m === 'POST') {
     requireRole(user, 'admin', 'editor');
@@ -508,17 +510,17 @@ async function api(req, res, url) {
   if (p === '/api/summary' && m === 'GET') {
     const q = url.searchParams;
     const s = await summary(isDate(q.get('from')) ? q.get('from') : null, isDate(q.get('to')) ? q.get('to') : null);
-    if (!seesAccounts(user)) { delete s.accounts; delete s.byKind; delete s.kinds; }
+    if (!seesAccounts(user)) delete s.accounts;
     return send(res, 200, s);
   }
 
   // Експорт у CSV (для Excel: роздільник «;», UTF-8 з BOM)
   if (p === '/api/export.csv' && m === 'GET') {
     const full = seesAccounts(user);
-    if (!full) url.searchParams.delete('account_id');
-    const rows = (await listTx(url.searchParams)).reverse();
+    const rows = (await listTx(url.searchParams, !full)).reverse();
     const head = ['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'];
-    if (!full) head.splice(3, 2);
+    const drop = (a) => { a.splice(7, 1); a.splice(3, 1); }; // без опису й назви рахунку
+    if (!full) drop(head);
     const lines = [head.join(';')];
     for (const r of rows) {
       const cells = [
@@ -526,7 +528,7 @@ async function api(req, res, url) {
         r.account ?? '', ACCOUNT_KINDS[r.account_kind] ?? '',
         (r.amount / 100).toFixed(2).replace('.', ','), r.counterparty, r.description, r.created_by_name,
       ];
-      if (!full) cells.splice(3, 2);
+      if (!full) drop(cells);
       lines.push(cells.map(csvCell).join(';'));
     }
     const name = `oblik-${new Date().toISOString().slice(0, 10)}.csv`;

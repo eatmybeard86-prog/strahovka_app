@@ -117,17 +117,21 @@ test('створення користувачів і перевірка прав
   // Перегляд — усім.
   assert.equal((await viewer('GET', '/api/summary')).status, 200);
   assert.equal((await viewer('GET', '/api/transactions')).status, 200);
-  // Глядач не бачить, де і в кого лежать кошти та чи це готівка.
+  // Глядач бачить лише готівка / безготівка: без рахунків (у кого і де) і без опису.
   const vs = (await viewer('GET', '/api/summary')).data;
   assert.equal(vs.accounts, undefined);
-  assert.equal(vs.byKind, undefined);
-  assert.ok(vs.total.closing > 0);
+  assert.equal(vs.byKind.cashless.closing, 200000);
   const vtx = (await viewer('GET', `/api/transactions?account_id=${card}`)).data;
   assert.ok(vtx.length > 1);
-  assert.ok(vtx.every((t) => !('account' in t) && !('account_kind' in t) && !('account_id' in t)));
+  assert.ok(vtx.every((t) => !('account' in t) && !('account_id' in t) && !('description' in t)));
+  assert.ok(vtx.some((t) => t.account_kind === 'cashless'));
+  assert.equal((await viewer('GET', '/api/transactions?kind=cashless')).data.length, 1);
+  assert.equal((await viewer('GET', '/api/transactions?q=' + encodeURIComponent('100 л'))).data.length, 0);
   assert.equal((await viewer('GET', '/api/accounts')).status, 403);
   const vcsv = (await viewer('GET', '/api/export.csv')).data;
-  assert.doesNotMatch(vcsv, /Рахунок|Готівка|Безготівка|Картка Іваненка/);
+  assert.doesNotMatch(vcsv, /Рахунок|Опис|Картка Іваненка|ДП; 100 л/);
+  assert.match(vcsv, /Готівка \/ безготівка/);
+  assert.match(vcsv, /;Безготівка;/);
   assert.equal((await editor('GET', '/api/accounts')).status, 200);
   assert.ok((await editor('GET', '/api/summary')).data.accounts);
   // Глядач нічого не змінює.
