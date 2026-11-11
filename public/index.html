@@ -94,8 +94,8 @@
             <tfoot id="sum-foot"></tfoot>
           </table>
         </div>
-        <h2 class="section-title">Де лежать кошти</h2>
-        <div class="card table-wrap">
+        <h2 class="section-title" data-accounts>Де лежать кошти</h2>
+        <div class="card table-wrap" data-accounts>
           <table class="data">
             <thead><tr>
               <th>Рахунок</th><th>Форма</th><th class="num">Залишок на початок</th><th class="num">Надійшло</th>
@@ -141,7 +141,7 @@
             </select>
           </label>
           <label>Категорія <select id="f-cat"></select></label>
-          <label>Рахунок <select id="f-acc"></select></label>
+          <label data-accounts>Рахунок <select id="f-acc"></select></label>
           <label class="grow">Пошук <input type="search" id="f-q" placeholder="опис або контрагент"></label>
           <button id="export" class="ghost">Експорт у CSV</button>
         </div>
@@ -149,7 +149,7 @@
         <div class="card table-wrap">
           <table class="data">
             <thead><tr>
-              <th>Дата</th><th>Категорія</th><th>Рахунок</th><th>Від кого / кому</th><th>Опис</th>
+              <th>Дата</th><th>Категорія</th><th data-accounts>Рахунок</th><th>Від кого / кому</th><th>Опис</th>
               <th class="num">Сума</th><th>Вніс</th><th></th>
             </tr></thead>
             <tbody id="tx-body"></tbody>

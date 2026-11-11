@@ -172,6 +172,11 @@ async function audit(user, action, details = '') {
 }
 
 // ---------- Права ----------
+// Глядач («лише перегляд») не бачить, де і в кого лежать кошти та в якій формі.
+const seesAccounts = (user) => user.role !== 'viewer';
+const ACCOUNT_FIELDS = ['account_id', 'account', 'account_kind'];
+const hideAccounts = (rows) => rows.map((r) => { const o = { ...r }; for (const k of ACCOUNT_FIELDS) delete o[k]; return o; });
+
 function requireRole(user, ...roles) {
   if (!roles.includes(user.role)) throw new HttpError(403, 'Недостатньо прав для цієї дії');
 }
@@ -411,8 +416,9 @@ async function api(req, res, url) {
     }
   }
 
-  // Рахунки (де лежать кошти): переглядати можуть усі, змінювати — адміністратор.
+  // Рахунки (де лежать кошти): бачать адміністратор і редактор, змінює — адміністратор.
   if (p === '/api/accounts' && m === 'GET') {
+    requireRole(user, 'admin', 'editor');
     return send(res, 200, await db.all(`
       SELECT a.id, a.name, a.kind, a.archived, COUNT(t.id) AS tx_count
       FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id
@@ -461,7 +467,11 @@ async function api(req, res, url) {
   }
 
   // Операції: переглядати можуть усі, вносити — адміністратор і редактор.
-  if (p === '/api/transactions' && m === 'GET') return send(res, 200, await listTx(url.searchParams));
+  if (p === '/api/transactions' && m === 'GET') {
+    if (!seesAccounts(user)) url.searchParams.delete('account_id');
+    const rows = await listTx(url.searchParams);
+    return send(res, 200, seesAccounts(user) ? rows : hideAccounts(rows));
+  }
   if (p === '/api/transactions' && m === 'POST') {
     requireRole(user, 'admin', 'editor');
     const t = await validateTx(await readJson(req), user);
@@ -497,19 +507,27 @@ async function api(req, res, url) {
 
   if (p === '/api/summary' && m === 'GET') {
     const q = url.searchParams;
-    return send(res, 200, await summary(isDate(q.get('from')) ? q.get('from') : null, isDate(q.get('to')) ? q.get('to') : null));
+    const s = await summary(isDate(q.get('from')) ? q.get('from') : null, isDate(q.get('to')) ? q.get('to') : null);
+    if (!seesAccounts(user)) { delete s.accounts; delete s.byKind; delete s.kinds; }
+    return send(res, 200, s);
   }
 
   // Експорт у CSV (для Excel: роздільник «;», UTF-8 з BOM)
   if (p === '/api/export.csv' && m === 'GET') {
+    const full = seesAccounts(user);
+    if (!full) url.searchParams.delete('account_id');
     const rows = (await listTx(url.searchParams)).reverse();
-    const lines = [['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'].join(';')];
+    const head = ['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'];
+    if (!full) head.splice(3, 2);
+    const lines = [head.join(';')];
     for (const r of rows) {
-      lines.push([
+      const cells = [
         r.date, r.type === 'income' ? 'Надходження' : 'Витрата', r.category,
         r.account ?? '', ACCOUNT_KINDS[r.account_kind] ?? '',
         (r.amount / 100).toFixed(2).replace('.', ','), r.counterparty, r.description, r.created_by_name,
-      ].map(csvCell).join(';'));
+      ];
+      if (!full) cells.splice(3, 2);
+      lines.push(cells.map(csvCell).join(';'));
     }
     const name = `oblik-${new Date().toISOString().slice(0, 10)}.csv`;
     return send(res, 200, '﻿' + lines.join('\r\n'), {

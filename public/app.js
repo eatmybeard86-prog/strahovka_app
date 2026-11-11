@@ -49,6 +49,8 @@ let editingUserId = null;
 
 const isAdmin = () => me?.role === 'admin';
 const canEdit = () => me && (me.role === 'admin' || me.role === 'editor');
+// Глядач не бачить рахунків (де і в кого лежать кошти, готівка чи безготівка).
+const seesAccounts = canEdit;
 const canUseCategory = (id) => canEdit() && (!me.categories || me.categories.includes(Number(id)));
 
 // ---------- Вхід / вихід ----------
@@ -67,9 +69,10 @@ async function showApp(session) {
   $('#me-role').textContent = roles[me.role];
   $$('[data-admin]').forEach((n) => { n.hidden = !isAdmin(); });
   $('#tx-form').hidden = !canEdit();
+  $$('[data-accounts]').forEach((n) => { n.hidden = !seesAccounts(); });
   switchTab('summary');
   resetTxForm();
-  await Promise.all([loadCategories(), loadAccounts()]);
+  await Promise.all([loadCategories(), seesAccounts() ? loadAccounts() : null]);
   await Promise.all([loadSummary(), loadTransactions()]);
 }
 $('#login-form').addEventListener('submit', async (e) => {
@@ -336,7 +339,7 @@ async function loadTransactions() {
   $('#tx-body').replaceChildren(...rows.map((t) => el('tr', {},
     el('td', { class: 'nowrap' }, dateFmt(t.date)),
     el('td', {}, t.category),
-    el('td', { class: t.account ? '' : 'muted' }, t.account ? `${t.account} · ${KINDS[t.account_kind].toLowerCase()}` : 'не вказано'),
+    seesAccounts() ? el('td', { class: t.account ? '' : 'muted' }, t.account ? `${t.account} · ${KINDS[t.account_kind].toLowerCase()}` : 'не вказано') : '',
     el('td', {}, t.counterparty),
     el('td', { class: 'desc' }, t.description),
     el('td', { class: 'num nowrap ' + t.type }, (t.type === 'income' ? '+' : '−') + money(t.amount)),
@@ -377,6 +380,12 @@ async function loadSummary() {
   const s = await api('/api/summary?' + p);
   const kpi = (label, value, cls = '', note = null) => el('div', { class: 'card kpi ' + cls },
     el('span', { class: 'muted' }, label), el('strong', {}, value), note ? el('span', { class: 'kpi-note' }, note) : '');
+  if (!s.byKind) {
+    $('#kpis').replaceChildren(
+      kpi('Надійшло за період', money(s.total.income), 'income'),
+      kpi('Витрачено за період', money(s.total.expense), 'expense'),
+      kpi('Залишок на кінець', signed(s.total.closing)));
+  } else {
   const split = [`готівкою ${money(s.byKind.cash.closing)}`, `безготівково ${money(s.byKind.cashless.closing)}`];
   if (s.byKind.none.closing) split.push(`не вказано ${money(s.byKind.none.closing)}`);
   $('#kpis').replaceChildren(
@@ -384,6 +393,7 @@ async function loadSummary() {
     kpi('Витрачено за період', money(s.total.expense), 'expense'),
     kpi('Залишок на кінець', signed(s.total.closing), '', split.join(' · ')),
   );
+  }
   const shown = s.categories.filter((c) => c.opening || c.income || c.expense);
   $('#sum-body').replaceChildren(...(shown.length ? shown.map((c) => el('tr', {},
     el('td', {}, c.name + (c.archived ? ' (архів)' : '')),
@@ -400,7 +410,8 @@ async function loadSummary() {
     el('th', { class: 'num' }, signed(s.total.closing)),
   ));
 
-  // Де лежать кошти: по рахунках і разом готівкою / безготівково.
+  // Де лежать кошти: по рахунках і разом готівкою / безготівково (глядачу не показується).
+  if (!s.accounts) return;
   const accRows = s.accounts.filter((a) => a.opening || a.income || a.expense || !a.archived);
   const accRow = (a) => el('tr', {},
     el('td', { class: a.id === null ? 'muted' : '' }, a.name + (a.archived && a.id !== null ? ' (архів)' : '')),
