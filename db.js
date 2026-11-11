@@ -24,6 +24,13 @@ const SQLITE_SCHEMA = `
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('cash', 'cashless')),
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS user_categories (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -76,6 +83,13 @@ const PG_SCHEMA = `
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT ${PG_NOW}
   );
+  CREATE TABLE IF NOT EXISTS accounts (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('cash', 'cashless')),
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT ${PG_NOW}
+  );
   CREATE TABLE IF NOT EXISTS user_categories (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -121,6 +135,8 @@ function openSqlite(dataDir) {
   const cols = db.prepare('PRAGMA table_info(transactions)').all().map((c) => c.name);
   if (!cols.includes('created_by')) db.exec('ALTER TABLE transactions ADD COLUMN created_by INTEGER REFERENCES users(id)');
   if (!cols.includes('updated_by')) db.exec('ALTER TABLE transactions ADD COLUMN updated_by INTEGER REFERENCES users(id)');
+  // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
+  if (!cols.includes('account_id')) db.exec('ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES accounts(id)');
 
   const prep = (sql) => db.prepare(sql.replace(/\$(\d+)/g, '?$1'));
   const plain = (rows) => rows.map((r) => ({ ...r }));
@@ -147,6 +163,8 @@ async function openPostgres(url) {
     idleTimeoutMillis: 30000,
   });
   await pool.query(PG_SCHEMA);
+  // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
+  await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id)');
   return {
     kind: 'postgres',
     like: 'ILIKE',

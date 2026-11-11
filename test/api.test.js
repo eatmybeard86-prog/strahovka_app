@@ -31,7 +31,7 @@ function client() {
 const admin = client();
 const editor = client();
 const viewer = client();
-let fuel; let food;
+let fuel; let food; let cash; let card;
 
 test.before(async () => {
   await init();
@@ -58,14 +58,20 @@ test('адміністратор: категорії, операції, звіт
   assert.equal(s.user.role, 'admin');
 
   fuel = (await admin('POST', '/api/categories', { name: 'Тестова' })).data.id;
+  const accs = (await admin('GET', '/api/accounts')).data;
+  assert.equal(accs.length, 2);
+  cash = accs.find((a) => a.kind === 'cash').id;
+  card = (await admin('POST', '/api/accounts', { name: 'Картка Іваненка', kind: 'cashless' })).data.id;
+  assert.equal((await admin('POST', '/api/accounts', { name: 'картка іваненка', kind: 'cash' })).status, 409);
+  assert.equal((await admin('POST', '/api/accounts', { name: 'Без типу' })).status, 400);
   food = (await admin('GET', '/api/categories')).data.find((c) => c.name === 'Харчування').id;
   assert.equal((await admin('POST', '/api/categories', { name: 'тестова' })).status, 409);
 
-  assert.equal((await admin('POST', '/api/transactions', { date: '2026-10-05', type: 'income', amount: '10000', category_id: fuel })).status, 201);
-  assert.equal((await admin('POST', '/api/transactions', { date: '2026-11-02', type: 'income', amount: '5 000,50', category_id: fuel })).status, 201);
-  assert.equal((await admin('POST', '/api/transactions', { date: '2026-11-03', type: 'expense', amount: 3000.25, category_id: fuel, description: 'ДП; 100 л' })).status, 201);
-  assert.equal((await admin('POST', '/api/transactions', { date: '2026-11-03', type: 'expense', amount: '-5', category_id: fuel })).status, 400);
-  assert.equal((await admin('POST', '/api/transactions', { date: '2026-13-40', type: 'expense', amount: '5', category_id: fuel })).status, 400);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: cash, date: '2026-10-05', type: 'income', amount: '10000', category_id: fuel })).status, 201);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-02', type: 'income', amount: '5 000,50', category_id: fuel })).status, 201);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-03', type: 'expense', amount: 3000.25, category_id: fuel, description: 'ДП; 100 л' })).status, 201);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-03', type: 'expense', amount: '-5', category_id: fuel })).status, 400);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: cash, date: '2026-13-40', type: 'expense', amount: '5', category_id: fuel })).status, 400);
 
   const sum = (await admin('GET', '/api/summary?from=2026-11-01&to=2026-11-30')).data;
   const row = sum.categories.find((c) => c.id === fuel);
@@ -75,6 +81,19 @@ test('адміністратор: категорії, операції, звіт
 
   assert.equal((await admin('DELETE', `/api/categories/${fuel}`)).status, 409);
 
+  // Рахунок обов'язковий; залишок видно по рахунках і за формою (готівка / безготівка).
+  assert.equal((await admin('POST', '/api/transactions', { date: '2026-11-04', type: 'income', amount: '1', category_id: fuel })).status, 400);
+  assert.equal((await admin('POST', '/api/transactions', { account_id: card, date: '2026-11-04', type: 'income', amount: '2000', category_id: fuel })).status, 201);
+  const s2 = (await admin('GET', '/api/summary?from=2026-11-01&to=2026-11-30')).data;
+  assert.equal(s2.accounts.find((a) => a.id === cash).closing, 1200025);
+  assert.equal(s2.accounts.find((a) => a.id === card).closing, 200000);
+  assert.equal(s2.byKind.cash.closing, 1200025);
+  assert.equal(s2.byKind.cashless.closing, 200000);
+  assert.equal(s2.total.closing, s2.byKind.cash.closing + s2.byKind.cashless.closing + s2.byKind.none.closing);
+  assert.equal((await admin('GET', `/api/transactions?account_id=${card}`)).data.length, 1);
+  assert.equal((await admin('DELETE', `/api/accounts/${card}`)).status, 409);
+  assert.equal((await admin('PUT', `/api/accounts/${card}`, { name: 'Картка Іваненка І.', archived: true })).status, 200);
+
   const list = (await admin('GET', `/api/transactions?type=expense&category_id=${fuel}`)).data;
   assert.equal(list.length, 1);
   assert.equal(list[0].created_by_name, 'Адміністратор');
@@ -83,6 +102,7 @@ test('адміністратор: категорії, операції, звіт
   const csv = await admin('GET', '/api/export.csv');
   assert.match(csv.data, /"ДП; 100 л"/);
   assert.match(csv.data, /100,00/);
+  assert.match(csv.data, /Картка Іваненка І\.;Безготівка/);
 });
 
 test('створення користувачів і перевірка прав', async () => {
@@ -97,22 +117,37 @@ test('створення користувачів і перевірка прав
   // Перегляд — усім.
   assert.equal((await viewer('GET', '/api/summary')).status, 200);
   assert.equal((await viewer('GET', '/api/transactions')).status, 200);
+  // Глядач не бачить, де і в кого лежать кошти та чи це готівка.
+  const vs = (await viewer('GET', '/api/summary')).data;
+  assert.equal(vs.accounts, undefined);
+  assert.equal(vs.byKind, undefined);
+  assert.ok(vs.total.closing > 0);
+  const vtx = (await viewer('GET', `/api/transactions?account_id=${card}`)).data;
+  assert.ok(vtx.length > 1);
+  assert.ok(vtx.every((t) => !('account' in t) && !('account_kind' in t) && !('account_id' in t)));
+  assert.equal((await viewer('GET', '/api/accounts')).status, 403);
+  const vcsv = (await viewer('GET', '/api/export.csv')).data;
+  assert.doesNotMatch(vcsv, /Рахунок|Готівка|Безготівка|Картка Іваненка/);
+  assert.equal((await editor('GET', '/api/accounts')).status, 200);
+  assert.ok((await editor('GET', '/api/summary')).data.accounts);
   // Глядач нічого не змінює.
-  assert.equal((await viewer('POST', '/api/transactions', { date: '2026-11-05', type: 'expense', amount: '1', category_id: fuel })).status, 403);
+  assert.equal((await viewer('POST', '/api/transactions', { account_id: cash, date: '2026-11-05', type: 'expense', amount: '1', category_id: fuel })).status, 403);
   assert.equal((await viewer('POST', '/api/categories', { name: 'X' })).status, 403);
+  assert.equal((await viewer('POST', '/api/accounts', { name: 'X', kind: 'cash' })).status, 403);
+  assert.equal((await editor('POST', '/api/accounts', { name: 'X', kind: 'cash' })).status, 403);
   assert.equal((await viewer('GET', '/api/users')).status, 403);
   assert.equal((await viewer('GET', '/api/audit')).status, 403);
 
   // Редактор — лише у своїй категорії.
-  assert.equal((await editor('POST', '/api/transactions', { date: '2026-11-05', type: 'expense', amount: '200', category_id: fuel })).status, 201);
-  assert.equal((await editor('POST', '/api/transactions', { date: '2026-11-05', type: 'expense', amount: '200', category_id: food })).status, 403);
+  assert.equal((await editor('POST', '/api/transactions', { account_id: cash, date: '2026-11-05', type: 'expense', amount: '200', category_id: fuel })).status, 201);
+  assert.equal((await editor('POST', '/api/transactions', { account_id: cash, date: '2026-11-05', type: 'expense', amount: '200', category_id: food })).status, 403);
   assert.equal((await editor('POST', '/api/categories', { name: 'Y' })).status, 403);
   const own = (await editor('GET', `/api/transactions?category_id=${fuel}`)).data[0];
   assert.equal(own.created_by_name, 'Старшина');
   // Перенести операцію в чужу категорію не можна.
   assert.equal((await editor('PUT', `/api/transactions/${own.id}`, { ...own, category_id: food })).status, 403);
 
-  const foodTx = (await admin('POST', '/api/transactions', { date: '2026-11-05', type: 'income', amount: '50', category_id: food })).data.id;
+  const foodTx = (await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-05', type: 'income', amount: '50', category_id: food })).data.id;
   assert.equal((await editor('DELETE', `/api/transactions/${foodTx}`)).status, 403);
   assert.equal((await editor('DELETE', `/api/transactions/${own.id}`)).status, 200);
 
