@@ -19,6 +19,8 @@ const ADMIN_LOGIN = (process.env.ADMIN_LOGIN || 'admin').trim().toLowerCase();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || process.env.APP_PASSWORD || '';
 
 const ROLES = { admin: 'Адміністратор', editor: 'Редактор', viewer: 'Лише перегляд' };
+const ACCOUNT_KINDS = { cash: 'Готівка', cashless: 'Безготівка' };
+const DEFAULT_ACCOUNTS = [['Каса', 'cash'], ['Банківський рахунок', 'cashless']];
 const DEFAULT_CATEGORIES = [
   'Пальне та мастила', 'Харчування', 'Ремонт техніки', 'Засоби зв’язку',
   'Медицина', 'Спорядження та обмундирування', 'Фортифікація та будматеріали',
@@ -49,6 +51,9 @@ async function init() {
   db = await openDatabase({ databaseUrl: DATABASE_URL, dataDir: DATA_DIR });
   if ((await db.get('SELECT COUNT(*) AS n FROM categories')).n === 0) {
     for (const name of DEFAULT_CATEGORIES) await db.run('INSERT INTO categories (name) VALUES ($1)', [name]);
+  }
+  if ((await db.get('SELECT COUNT(*) AS n FROM accounts')).n === 0) {
+    for (const [name, kind] of DEFAULT_ACCOUNTS) await db.run('INSERT INTO accounts (name, kind) VALUES ($1, $2)', [name, kind]);
   }
   if ((await db.get('SELECT COUNT(*) AS n FROM users')).n === 0) {
     if (!ADMIN_PASSWORD) {
@@ -187,8 +192,12 @@ async function validateTx(body, user) {
     throw new HttpError(400, 'Оберіть категорію');
   }
   requireCategory(user, categoryId);
+  const accountId = toId(body.account_id);
+  if (!accountId || !(await db.get('SELECT 1 AS x FROM accounts WHERE id = $1', [accountId]))) {
+    throw new HttpError(400, body.type === 'income' ? 'Оберіть, на який рахунок надійшли кошти' : 'Оберіть, з якого рахунку витрачено кошти');
+  }
   return {
-    date, type: body.type, amount, category_id: categoryId,
+    date, type: body.type, amount, category_id: categoryId, account_id: accountId,
     counterparty: cleanText(body.counterparty, 200),
     description: cleanText(body.description, 1000),
   };
@@ -201,6 +210,8 @@ function txFilters(q) {
   if (isDate(q.get('to'))) add('t.date <= ?', q.get('to'));
   if (['income', 'expense'].includes(q.get('type'))) add('t.type = ?', q.get('type'));
   if (toId(q.get('category_id'))) add('t.category_id = ?', toId(q.get('category_id')));
+  if (q.get('account_id') === 'none') where.push('t.account_id IS NULL');
+  else if (toId(q.get('account_id'))) add('t.account_id = ?', toId(q.get('account_id')));
   const search = cleanText(q.get('q'), 100);
   if (search) {
     params.push(`%${search}%`);
@@ -213,17 +224,21 @@ function listTx(q) {
   const f = txFilters(q);
   return db.all(`
     SELECT t.id, t.date, t.type, t.amount, t.category_id, c.name AS category,
+           t.account_id, a.name AS account, a.kind AS account_kind,
            t.counterparty, t.description, t.created_at, t.updated_at,
            cu.name AS created_by_name, uu.name AS updated_by_name
     FROM transactions t
     JOIN categories c ON c.id = t.category_id
+    LEFT JOIN accounts a ON a.id = t.account_id
     LEFT JOIN users cu ON cu.id = t.created_by
     LEFT JOIN users uu ON uu.id = t.updated_by
     ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 5000`, f.params);
 }
 async function txLabel(t) {
   const cat = (await db.get('SELECT name FROM categories WHERE id = $1', [t.category_id]))?.name ?? '?';
+  const acc = t.account_id ? (await db.get('SELECT name FROM accounts WHERE id = $1', [t.account_id]))?.name : null;
   return `${t.type === 'income' ? 'Надходження' : 'Витрата'} ${hrn(t.amount)}, ${t.date}, «${cat}»`
+    + (acc ? `, ${t.type === 'income' ? 'на' : 'з'} «${acc}»` : '')
     + (t.description ? `, ${t.description}` : '');
 }
 function csvCell(v) {
@@ -231,10 +246,10 @@ function csvCell(v) {
   return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// Назви категорій порівнюємо без урахування регістру (і для кирилиці).
-async function nameTaken(name, exceptId = 0) {
+// Назви категорій і рахунків порівнюємо без урахування регістру (і для кирилиці).
+async function nameTaken(name, exceptId = 0, table = 'categories') {
   const key = name.toLocaleLowerCase('uk');
-  return (await db.all('SELECT id, name FROM categories'))
+  return (await db.all(`SELECT id, name FROM ${table === 'accounts' ? 'accounts' : 'categories'}`))
     .some((c) => c.id !== exceptId && c.name.toLocaleLowerCase('uk') === key);
 }
 
@@ -264,35 +279,47 @@ async function listUsers() {
   }));
 }
 
-// Звіт: залишок на початок періоду і рух за період по кожній категорії.
+// Звіт: залишок на початок періоду і рух за період по кожній категорії та по кожному рахунку.
 async function summary(from, to) {
   const cats = await db.all('SELECT id, name, archived FROM categories ORDER BY archived, name');
-  const sumBy = async (where, params) => {
+  const accs = await db.all('SELECT id, name, kind, archived FROM accounts ORDER BY archived, name');
+  const sumBy = async (column, where, params) => {
     const rows = await db.all(`
-      SELECT category_id,
+      SELECT ${column} AS k,
         COALESCE(SUM(CASE WHEN type = 'income' THEN amount END), 0) AS income,
         COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS expense
-      FROM transactions ${where} GROUP BY category_id`, params);
-    return new Map(rows.map((r) => [r.category_id, r]));
+      FROM transactions ${where} GROUP BY ${column}`, params);
+    return new Map(rows.map((r) => [r.k, r]));
   };
-  const before = from ? await sumBy('WHERE date < $1', [from]) : new Map();
   const conds = []; const params = [];
   if (from) { params.push(from); conds.push('date >= $' + params.length); }
   if (to) { params.push(to); conds.push('date <= $' + params.length); }
-  const during = await sumBy(conds.length ? 'WHERE ' + conds.join(' AND ') : '', params);
+  const duringWhere = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
 
-  const categories = cats.map((c) => {
-    const b = before.get(c.id); const d = during.get(c.id);
-    const opening = b ? b.income - b.expense : 0;
-    const income = d ? d.income : 0;
-    const expense = d ? d.expense : 0;
-    return { ...c, opening, income, expense, closing: opening + income - expense };
-  }).filter((r) => !r.archived || r.opening || r.income || r.expense);
-  const total = categories.reduce((a, r) => ({
+  const rowsFor = async (column, items) => {
+    const before = from ? await sumBy(column, 'WHERE date < $1', [from]) : new Map();
+    const during = await sumBy(column, duringWhere, params);
+    return items.map((c) => {
+      const b = before.get(c.id); const d = during.get(c.id);
+      const opening = b ? b.income - b.expense : 0;
+      const income = d ? d.income : 0;
+      const expense = d ? d.expense : 0;
+      return { ...c, opening, income, expense, closing: opening + income - expense };
+    }).filter((r) => !r.archived || r.opening || r.income || r.expense);
+  };
+  const totalOf = (rows) => rows.reduce((a, r) => ({
     opening: a.opening + r.opening, income: a.income + r.income,
     expense: a.expense + r.expense, closing: a.closing + r.closing,
   }), { opening: 0, income: 0, expense: 0, closing: 0 });
-  return { from, to, categories, total };
+
+  const categories = await rowsFor('category_id', cats);
+  // Операції без рахунку (внесені до появи рахунків) показуємо окремим рядком.
+  const accounts = (await rowsFor('account_id', [...accs, { id: null, name: 'Рахунок не вказано', kind: null, archived: 1 }]));
+  const byKind = {};
+  for (const kind of [...Object.keys(ACCOUNT_KINDS), 'none']) {
+    byKind[kind] = totalOf(accounts.filter((a) => (a.kind || 'none') === kind));
+  }
+  return { from, to, categories, total: totalOf(categories), accounts, byKind, kinds: ACCOUNT_KINDS };
 }
 
 // ---------- API ----------
@@ -384,6 +411,55 @@ async function api(req, res, url) {
     }
   }
 
+  // Рахунки (де лежать кошти): переглядати можуть усі, змінювати — адміністратор.
+  if (p === '/api/accounts' && m === 'GET') {
+    return send(res, 200, await db.all(`
+      SELECT a.id, a.name, a.kind, a.archived, COUNT(t.id) AS tx_count
+      FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id
+      GROUP BY a.id, a.name, a.kind, a.archived ORDER BY a.archived, a.name`));
+  }
+  if (p === '/api/accounts' && m === 'POST') {
+    requireRole(user, 'admin');
+    const body = await readJson(req);
+    const name = cleanText(body.name, 100);
+    if (!name) throw new HttpError(400, 'Вкажіть назву рахунку');
+    if (!ACCOUNT_KINDS[body.kind]) throw new HttpError(400, 'Оберіть: готівка чи безготівка');
+    if (await nameTaken(name, 0, 'accounts')) throw new HttpError(409, 'Такий рахунок уже є');
+    const r = await db.get('INSERT INTO accounts (name, kind) VALUES ($1, $2) RETURNING id', [name, body.kind]);
+    await audit(user, 'Новий рахунок', `${name} (${ACCOUNT_KINDS[body.kind]})`);
+    return send(res, 201, { id: r.id });
+  }
+  mm = p.match(/^\/api\/accounts\/(\d+)$/);
+  if (mm) {
+    requireRole(user, 'admin');
+    const id = toId(mm[1]);
+    const acc = await db.get('SELECT * FROM accounts WHERE id = $1', [id]);
+    if (!acc) throw new HttpError(404, 'Рахунок не знайдено');
+    if (m === 'PUT') {
+      const body = await readJson(req);
+      const name = body.name === undefined ? acc.name : cleanText(body.name, 100);
+      if (!name) throw new HttpError(400, 'Вкажіть назву рахунку');
+      if (await nameTaken(name, id, 'accounts')) throw new HttpError(409, 'Такий рахунок уже є');
+      const kind = body.kind === undefined ? acc.kind : body.kind;
+      if (!ACCOUNT_KINDS[kind]) throw new HttpError(400, 'Оберіть: готівка чи безготівка');
+      const archived = body.archived === undefined ? acc.archived : (body.archived ? 1 : 0);
+      await db.run('UPDATE accounts SET name = $1, kind = $2, archived = $3 WHERE id = $4', [name, kind, archived, id]);
+      const changes = [];
+      if (name !== acc.name) changes.push(`назва: «${name}»`);
+      if (kind !== acc.kind) changes.push(ACCOUNT_KINDS[kind]);
+      if (archived !== acc.archived) changes.push(archived ? 'архівовано' : 'відновлено');
+      if (changes.length) await audit(user, 'Зміна рахунку', `«${acc.name}»: ${changes.join(', ')}`);
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'DELETE') {
+      const used = (await db.get('SELECT COUNT(*) AS n FROM transactions WHERE account_id = $1', [id])).n;
+      if (used) throw new HttpError(409, 'На рахунку є операції. Його можна лише архівувати.');
+      await db.run('DELETE FROM accounts WHERE id = $1', [id]);
+      await audit(user, 'Рахунок видалено', acc.name);
+      return send(res, 200, { ok: true });
+    }
+  }
+
   // Операції: переглядати можуть усі, вносити — адміністратор і редактор.
   if (p === '/api/transactions' && m === 'GET') return send(res, 200, await listTx(url.searchParams));
   if (p === '/api/transactions' && m === 'POST') {
@@ -391,9 +467,9 @@ async function api(req, res, url) {
     const t = await validateTx(await readJson(req), user);
     const now = nowText();
     const r = await db.get(`INSERT INTO transactions
-      (date, type, amount, category_id, counterparty, description, created_by, updated_by, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $8) RETURNING id`,
-      [t.date, t.type, t.amount, t.category_id, t.counterparty, t.description, user.id, now]);
+      (date, type, amount, category_id, account_id, counterparty, description, created_by, updated_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $9) RETURNING id`,
+      [t.date, t.type, t.amount, t.category_id, t.account_id, t.counterparty, t.description, user.id, now]);
     await audit(user, 'Нова операція', await txLabel(t));
     return send(res, 201, { id: r.id });
   }
@@ -407,8 +483,8 @@ async function api(req, res, url) {
     if (m === 'PUT') {
       const t = await validateTx(await readJson(req), user);
       await db.run(`UPDATE transactions SET date = $1, type = $2, amount = $3, category_id = $4, counterparty = $5,
-        description = $6, updated_by = $7, updated_at = $8 WHERE id = $9`,
-        [t.date, t.type, t.amount, t.category_id, t.counterparty, t.description, user.id, nowText(), id]);
+        description = $6, updated_by = $7, updated_at = $8, account_id = $9 WHERE id = $10`,
+        [t.date, t.type, t.amount, t.category_id, t.counterparty, t.description, user.id, nowText(), t.account_id, id]);
       await audit(user, 'Зміна операції', `було: ${await txLabel(old)}; стало: ${await txLabel(t)}`);
       return send(res, 200, { ok: true });
     }
@@ -427,10 +503,11 @@ async function api(req, res, url) {
   // Експорт у CSV (для Excel: роздільник «;», UTF-8 з BOM)
   if (p === '/api/export.csv' && m === 'GET') {
     const rows = (await listTx(url.searchParams)).reverse();
-    const lines = [['Дата', 'Тип', 'Категорія', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'].join(';')];
+    const lines = [['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'].join(';')];
     for (const r of rows) {
       lines.push([
         r.date, r.type === 'income' ? 'Надходження' : 'Витрата', r.category,
+        r.account ?? '', ACCOUNT_KINDS[r.account_kind] ?? '',
         (r.amount / 100).toFixed(2).replace('.', ','), r.counterparty, r.description, r.created_by_name,
       ].map(csvCell).join(';'));
     }

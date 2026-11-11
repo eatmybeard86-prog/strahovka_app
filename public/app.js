@@ -42,6 +42,8 @@ async function api(path, opts = {}) {
 let me = null;
 let roles = {};
 let categories = [];
+let accounts = [];
+const KINDS = { cash: 'Готівка', cashless: 'Безготівка' };
 let editingId = null;
 let editingUserId = null;
 
@@ -67,7 +69,7 @@ async function showApp(session) {
   $('#tx-form').hidden = !canEdit();
   switchTab('summary');
   resetTxForm();
-  await loadCategories();
+  await Promise.all([loadCategories(), loadAccounts()]);
   await Promise.all([loadSummary(), loadTransactions()]);
 }
 $('#login-form').addEventListener('submit', async (e) => {
@@ -110,6 +112,7 @@ function switchTab(name) {
   if (name === 'summary' && me) loadSummary();
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
+  if (name === 'accounts') loadAccounts();
 }
 $$('.tabs button').forEach((btn) => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
@@ -170,10 +173,73 @@ $('#cat-form').addEventListener('submit', async (e) => {
   } catch (err) { $('#cat-error').textContent = err.message; }
 });
 
+// ---------- Рахунки ----------
+async function loadAccounts() {
+  accounts = (await api('/api/accounts'))
+    .sort((a, b) => a.archived - b.archived || a.name.localeCompare(b.name, 'uk'));
+  renderAccountSelects();
+  if (isAdmin()) renderAccountTable();
+}
+const accLabel = (a) => `${a.name} (${KINDS[a.kind].toLowerCase()})`;
+function renderAccountSelects() {
+  const formSel = $('#tx-form [name=account_id]');
+  const current = formSel.value;
+  formSel.replaceChildren(el('option', { value: '' }, '— оберіть —'),
+    ...accounts.filter((a) => !a.archived || String(a.id) === current).map((a) => el('option', { value: a.id }, accLabel(a))));
+  formSel.value = current;
+
+  const filterSel = $('#f-acc');
+  const fcur = filterSel.value;
+  filterSel.replaceChildren(el('option', { value: '' }, 'Усі'),
+    ...accounts.map((a) => el('option', { value: a.id }, a.name + (a.archived ? ' (архів)' : ''))),
+    el('option', { value: 'none' }, 'Не вказано'));
+  filterSel.value = fcur;
+}
+function renderAccountTable() {
+  $('#acc-body').replaceChildren(...accounts.map((a) => el('tr', { class: a.archived ? 'archived' : '' },
+    el('td', {}, a.name),
+    el('td', {}, KINDS[a.kind]),
+    el('td', { class: 'num' }, a.tx_count),
+    el('td', {}, a.archived ? 'В архіві' : 'Активний'),
+    el('td', { class: 'row-actions' },
+      el('button', { class: 'link', onclick: () => renameAccount(a) }, 'Перейменувати'),
+      el('button', { class: 'link', onclick: () => updateAccount(a.id, { kind: a.kind === 'cash' ? 'cashless' : 'cash' }) },
+        a.kind === 'cash' ? 'Зробити безготівкою' : 'Зробити готівкою'),
+      el('button', { class: 'link', onclick: () => updateAccount(a.id, { archived: !a.archived }) },
+        a.archived ? 'Відновити' : 'Архівувати'),
+      a.tx_count ? '' : el('button', { class: 'link danger', onclick: () => deleteAccount(a) }, 'Видалити')),
+  )));
+}
+async function updateAccount(id, body) {
+  $('#acc-error').textContent = '';
+  try { await api('/api/accounts/' + id, { method: 'PUT', body }); await loadAccounts(); }
+  catch (err) { $('#acc-error').textContent = err.message; }
+}
+function renameAccount(a) {
+  const name = prompt('Нова назва рахунку:', a.name);
+  if (name && name.trim() && name.trim() !== a.name) updateAccount(a.id, { name: name.trim() });
+}
+async function deleteAccount(a) {
+  if (!confirm(`Видалити рахунок «${a.name}»?`)) return;
+  try { await api('/api/accounts/' + a.id, { method: 'DELETE' }); await loadAccounts(); }
+  catch (err) { $('#acc-error').textContent = err.message; }
+}
+$('#acc-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#acc-error').textContent = '';
+  try {
+    await api('/api/accounts', { method: 'POST', body: { name: e.target.name.value, kind: e.target.kind.value } });
+    e.target.reset();
+    await loadAccounts();
+  } catch (err) { $('#acc-error').textContent = err.message; }
+});
+
 // ---------- Операції ----------
 const txForm = $('#tx-form');
 function updateCpLabel() {
-  $('#cp-label').textContent = txForm.type.value === 'income' ? 'Від кого (джерело)' : 'Кому / постачальник';
+  const income = txForm.type.value === 'income';
+  $('#cp-label').textContent = income ? 'Від кого (джерело)' : 'Кому / постачальник';
+  $('#acc-label').textContent = income ? 'На рахунок (куди надійшло)' : 'З рахунку (звідки витрачено)';
 }
 txForm.querySelectorAll('[name=type]').forEach((r) => r.addEventListener('change', updateCpLabel));
 
@@ -186,6 +252,7 @@ function resetTxForm() {
   $('#tx-cancel').hidden = true;
   $('#tx-error').textContent = '';
   renderCategorySelects();
+  renderAccountSelects();
   updateCpLabel();
 }
 $('#tx-cancel').addEventListener('click', resetTxForm);
@@ -195,7 +262,7 @@ txForm.addEventListener('submit', async (e) => {
   $('#tx-error').textContent = '';
   const body = {
     type: txForm.type.value, date: txForm.date.value, amount: txForm.amount.value,
-    category_id: txForm.category_id.value, counterparty: txForm.counterparty.value,
+    category_id: txForm.category_id.value, account_id: txForm.account_id.value, counterparty: txForm.counterparty.value,
     description: txForm.description.value,
   };
   try {
@@ -221,6 +288,11 @@ function editTx(t) {
     txForm.category_id.append(el('option', { value: t.category_id }, t.category));
   }
   txForm.category_id.value = t.category_id;
+  renderAccountSelects();
+  if (t.account_id && ![...txForm.account_id.options].some((o) => o.value === String(t.account_id))) {
+    txForm.account_id.append(el('option', { value: t.account_id }, t.account));
+  }
+  txForm.account_id.value = t.account_id ?? '';
   txForm.counterparty.value = t.counterparty;
   txForm.description.value = t.description;
   $('#tx-form-title').textContent = 'Редагування операції';
@@ -244,6 +316,7 @@ function filterQuery() {
   const add = (k, v) => { if (v) p.set(k, v); };
   add('from', $('#f-from').value); add('to', $('#f-to').value);
   add('type', $('#f-type').value); add('category_id', $('#f-cat').value);
+  add('account_id', $('#f-acc').value);
   add('q', $('#f-q').value.trim());
   return p.toString();
 }
@@ -263,6 +336,7 @@ async function loadTransactions() {
   $('#tx-body').replaceChildren(...rows.map((t) => el('tr', {},
     el('td', { class: 'nowrap' }, dateFmt(t.date)),
     el('td', {}, t.category),
+    el('td', { class: t.account ? '' : 'muted' }, t.account ? `${t.account} · ${KINDS[t.account_kind].toLowerCase()}` : 'не вказано'),
     el('td', {}, t.counterparty),
     el('td', { class: 'desc' }, t.description),
     el('td', { class: 'num nowrap ' + t.type }, (t.type === 'income' ? '+' : '−') + money(t.amount)),
@@ -274,7 +348,7 @@ async function loadTransactions() {
   )));
 }
 let searchTimer;
-['#f-from', '#f-to', '#f-type', '#f-cat'].forEach((s) => $(s).addEventListener('change', loadTransactions));
+['#f-from', '#f-to', '#f-type', '#f-cat', '#f-acc'].forEach((s) => $(s).addEventListener('change', loadTransactions));
 $('#f-q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadTransactions, 300); });
 $('#export').addEventListener('click', () => { window.location.href = '/api/export.csv?' + filterQuery(); });
 
@@ -301,11 +375,14 @@ async function loadSummary() {
   if ($('#sum-from').value) p.set('from', $('#sum-from').value);
   if ($('#sum-to').value) p.set('to', $('#sum-to').value);
   const s = await api('/api/summary?' + p);
-  const kpi = (label, value, cls = '') => el('div', { class: 'card kpi ' + cls }, el('span', { class: 'muted' }, label), el('strong', {}, value));
+  const kpi = (label, value, cls = '', note = null) => el('div', { class: 'card kpi ' + cls },
+    el('span', { class: 'muted' }, label), el('strong', {}, value), note ? el('span', { class: 'kpi-note' }, note) : '');
+  const split = [`готівкою ${money(s.byKind.cash.closing)}`, `безготівково ${money(s.byKind.cashless.closing)}`];
+  if (s.byKind.none.closing) split.push(`не вказано ${money(s.byKind.none.closing)}`);
   $('#kpis').replaceChildren(
     kpi('Надійшло за період', money(s.total.income), 'income'),
     kpi('Витрачено за період', money(s.total.expense), 'expense'),
-    kpi('Залишок на кінець', signed(s.total.closing)),
+    kpi('Залишок на кінець', signed(s.total.closing), '', split.join(' · ')),
   );
   const shown = s.categories.filter((c) => c.opening || c.income || c.expense);
   $('#sum-body').replaceChildren(...(shown.length ? shown.map((c) => el('tr', {},
@@ -322,6 +399,28 @@ async function loadSummary() {
     el('th', { class: 'num' }, money(s.total.expense)),
     el('th', { class: 'num' }, signed(s.total.closing)),
   ));
+
+  // Де лежать кошти: по рахунках і разом готівкою / безготівково.
+  const accRows = s.accounts.filter((a) => a.opening || a.income || a.expense || !a.archived);
+  const accRow = (a) => el('tr', {},
+    el('td', { class: a.id === null ? 'muted' : '' }, a.name + (a.archived && a.id !== null ? ' (архів)' : '')),
+    el('td', {}, a.kind ? KINDS[a.kind] : '—'),
+    el('td', { class: 'num' }, signed(a.opening)),
+    el('td', { class: 'num income' }, money(a.income)),
+    el('td', { class: 'num expense' }, money(a.expense)),
+    el('td', { class: 'num strong' }, signed(a.closing)));
+  $('#acc-sum-body').replaceChildren(...accRows.map(accRow));
+  const footRow = (label, t, cls = '') => el('tr', { class: cls },
+    el('th', { colspan: 2 }, label),
+    el('th', { class: 'num' }, signed(t.opening)),
+    el('th', { class: 'num' }, money(t.income)),
+    el('th', { class: 'num' }, money(t.expense)),
+    el('th', { class: 'num' }, signed(t.closing)));
+  const foot = [footRow('Готівкою', s.byKind.cash, 'sub'), footRow('Безготівково', s.byKind.cashless, 'sub')];
+  const none = s.byKind.none;
+  if (none.opening || none.income || none.expense) foot.push(footRow('Рахунок не вказано', none, 'sub'));
+  foot.push(footRow('Разом', s.total));
+  $('#acc-sum-foot').replaceChildren(...foot);
 }
 
 // ---------- Користувачі ----------

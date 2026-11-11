@@ -181,3 +181,8 @@ label.check input { width: auto; min-height: 0; }
 /* Перемикач теми */
 .theme-select { width: auto; min-height: 34px; padding: 4px 8px; font-size: .88rem; }
 .login-card .theme-row { display: flex; justify-content: flex-end; }
+
+/* Де лежать кошти */
+.section-title { margin: 8px 0 -4px; font-size: 1.05rem; }
+.kpi-note { font-size: .85rem; color: var(--muted); }
+table.data tfoot tr.sub th { font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--border); }
