@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Облік роти</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234a5d23'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif'%3E%E2%82%B4%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Вхід -->
+  <section id="login-view" class="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>Облік роти</h1>
+      <p class="muted">Надходження та витрати за категоріями потреб</p>
+      <label>Логін
+        <input type="text" name="login" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+      </label>
+      <label>Пароль
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary">Увійти</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- Застосунок -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <strong class="brand">Облік роти</strong>
+      <nav class="tabs" role="tablist">
+        <button data-tab="summary" class="active">Звіт</button>
+        <button data-tab="transactions">Операції</button>
+        <button data-tab="categories" data-admin>Категорії</button>
+        <button data-tab="users" data-admin>Користувачі</button>
+        <button data-tab="audit" data-admin>Журнал</button>
+      </nav>
+      <div class="me">
+        <button id="me-btn" class="link" title="Змінити пароль"><span id="me-name"></span> <span class="badge" id="me-role"></span></button>
+        <button id="logout" class="ghost">Вийти</button>
+      </div>
+    </header>
+
+    <dialog id="pw-dialog">
+      <form id="pw-form" class="stack">
+        <h2>Зміна пароля</h2>
+        <label>Поточний пароль <input type="password" name="current" autocomplete="current-password" required></label>
+        <label>Новий пароль (щонайменше 8 символів) <input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+        <label>Повторіть новий пароль <input type="password" name="password2" autocomplete="new-password" minlength="8" required></label>
+        <p id="pw-error" class="error" role="alert"></p>
+        <div class="actions">
+          <button type="submit" class="primary">Зберегти</button>
+          <button type="button" class="ghost" id="pw-cancel">Скасувати</button>
+        </div>
+      </form>
+    </dialog>
+
+    <main>
+      <!-- Звіт -->
+      <section id="tab-summary" class="tab">
+        <div class="toolbar">
+          <label>З <input type="date" id="sum-from"></label>
+          <label>По <input type="date" id="sum-to"></label>
+          <div class="presets">
+            <button data-preset="month" class="ghost">Цей місяць</button>
+            <button data-preset="prev" class="ghost">Минулий місяць</button>
+            <button data-preset="year" class="ghost">Цей рік</button>
+            <button data-preset="all" class="ghost">Весь час</button>
+          </div>
+        </div>
+        <div class="kpis" id="kpis"></div>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Категорія</th><th class="num">Залишок на початок</th><th class="num">Надійшло</th>
+              <th class="num">Витрачено</th><th class="num">Залишок на кінець</th>
+            </tr></thead>
+            <tbody id="sum-body"></tbody>
+            <tfoot id="sum-foot"></tfoot>
+          </table>
+        </div>
+      </section>
+
+      <!-- Операції -->
+      <section id="tab-transactions" class="tab" hidden>
+        <form id="tx-form" class="card tx-form">
+          <h2 id="tx-form-title">Нова операція</h2>
+          <div class="type-switch" role="radiogroup">
+            <label><input type="radio" name="type" value="expense" checked><span>Витрата</span></label>
+            <label><input type="radio" name="type" value="income"><span>Надходження</span></label>
+          </div>
+          <div class="grid">
+            <label>Дата <input type="date" name="date" required></label>
+            <label>Сума, грн <input type="text" name="amount" inputmode="decimal" placeholder="0,00" required></label>
+            <label>Категорія <select name="category_id" required></select></label>
+            <label><span id="cp-label">Кому / постачальник</span> <input type="text" name="counterparty" maxlength="200"></label>
+          </div>
+          <label>Опис <input type="text" name="description" maxlength="1000" placeholder="Що саме, № накладної тощо"></label>
+          <div class="actions">
+            <button type="submit" class="primary" id="tx-submit">Додати</button>
+            <button type="button" class="ghost" id="tx-cancel" hidden>Скасувати редагування</button>
+          </div>
+          <p id="tx-error" class="error" role="alert"></p>
+        </form>
+
+        <div class="toolbar">
+          <label>З <input type="date" id="f-from"></label>
+          <label>По <input type="date" id="f-to"></label>
+          <label>Тип
+            <select id="f-type">
+              <option value="">Усі</option>
+              <option value="income">Надходження</option>
+              <option value="expense">Витрати</option>
+            </select>
+          </label>
+          <label>Категорія <select id="f-cat"></select></label>
+          <label class="grow">Пошук <input type="search" id="f-q" placeholder="опис або контрагент"></label>
+          <button id="export" class="ghost">Експорт у CSV</button>
+        </div>
+        <p class="muted" id="tx-totals"></p>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Дата</th><th>Категорія</th><th>Від кого / кому</th><th>Опис</th>
+              <th class="num">Сума</th><th>Вніс</th><th></th>
+            </tr></thead>
+            <tbody id="tx-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Категорії -->
+      <section id="tab-categories" class="tab" hidden>
+        <form id="cat-form" class="card inline-form">
+          <label class="grow">Нова категорія <input type="text" name="name" maxlength="100" required></label>
+          <button type="submit" class="primary">Додати</button>
+        </form>
+        <p id="cat-error" class="error" role="alert"></p>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr><th>Назва</th><th class="num">Операцій</th><th>Стан</th><th></th></tr></thead>
+            <tbody id="cat-body"></tbody>
+          </table>
+        </div>
+        <p class="muted">Категорію з операціями не можна видалити, але можна архівувати: вона зникне зі списку для нових операцій, а історія збережеться.</p>
+      </section>
+
+      <!-- Користувачі -->
+      <section id="tab-users" class="tab" hidden>
+        <form id="user-form" class="card stack">
+          <h2 id="user-form-title">Новий користувач</h2>
+          <div class="grid">
+            <label>Логін <input type="text" name="login" autocomplete="off" autocapitalize="none" spellcheck="false" pattern="[A-Za-z0-9._\-]{3,32}" placeholder="напр. ivanenko" required></label>
+            <label>Ім'я, посада <input type="text" name="name" maxlength="100" placeholder="ст. сержант Іваненко І.І., старшина" required></label>
+            <label>Роль
+              <select name="role">
+                <option value="editor">Редактор: вносить операції</option>
+                <option value="viewer">Лише перегляд</option>
+                <option value="admin">Адміністратор: усе, включно з користувачами</option>
+              </select>
+            </label>
+            <label><span id="user-pw-label">Пароль (щонайменше 8 символів)</span> <input type="password" name="password" autocomplete="new-password" minlength="8"></label>
+          </div>
+          <fieldset id="user-cats" class="cat-picker">
+            <legend>Категорії, з якими може працювати редактор <span class="muted">(нічого не вибрано = усі)</span></legend>
+            <div id="user-cats-list" class="checks"></div>
+          </fieldset>
+          <div class="actions">
+            <button type="submit" class="primary" id="user-submit">Створити</button>
+            <button type="button" class="ghost" id="user-cancel" hidden>Скасувати редагування</button>
+          </div>
+          <p id="user-error" class="error" role="alert"></p>
+        </form>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr><th>Ім'я, посада</th><th>Логін</th><th>Роль</th><th>Доступ до категорій</th><th>Стан</th><th></th></tr></thead>
+            <tbody id="user-body"></tbody>
+          </table>
+        </div>
+        <p class="muted">Переглядати звіт і операції можуть усі користувачі. Редактор вносить, змінює й видаляє операції (лише у своїх категоріях, якщо їх обмежено). Адміністратор керує категоріями, користувачами й бачить журнал дій.</p>
+      </section>
+
+      <!-- Журнал -->
+      <section id="tab-audit" class="tab" hidden>
+        <p class="muted">Останні 500 дій: входи, зміни операцій, категорій і користувачів.</p>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr><th>Час</th><th>Хто</th><th>Дія</th><th>Подробиці</th></tr></thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
