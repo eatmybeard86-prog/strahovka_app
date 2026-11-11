@@ -143,3 +143,17 @@ test('вихід завершує сесію', async () => {
   const r = await editor('POST', '/api/logout', {});
   assert.match(r.headers.get('set-cookie'), /Max-Age=0/);
 });
+
+test('вікно keepalive за київським часом', () => {
+  const { inKeepaliveWindow, kyivHour } = require('../server.js');
+  assert.equal(inKeepaliveWindow(6, '7-23'), false);
+  assert.equal(inKeepaliveWindow(7, '7-23'), true);
+  assert.equal(inKeepaliveWindow(22, '7-23'), true);
+  assert.equal(inKeepaliveWindow(23, '7-23'), false);
+  assert.equal(inKeepaliveWindow(3, '0-24'), true);
+  assert.equal(inKeepaliveWindow(2, '22-6'), true);
+  assert.equal(inKeepaliveWindow(12, '22-6'), false);
+  assert.equal(inKeepaliveWindow(12, 'off'), false);
+  // 2026-01-15 10:00 UTC — це 12:00 у Києві (зимовий час, UTC+2).
+  assert.equal(kyivHour(new Date('2026-01-15T10:00:00Z')), 12);
+});

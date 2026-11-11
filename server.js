@@ -534,12 +534,39 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// ---------- Щоб безкоштовний Render не «засинав» у робочий час ----------
+// Render присипляє безкоштовний сервіс після 15 хв без зовнішніх запитів. Поки сервіс працює,
+// він сам звертається до своєї публічної адреси кожні 10 хв, але лише в години KEEPALIVE_HOURS
+// (за київським часом), щоб уночі засинати й не витрачати ліміт 750 безкоштовних годин на місяць.
+const KEEPALIVE_URL = process.env.KEEPALIVE_URL || process.env.RENDER_EXTERNAL_URL || '';
+const KEEPALIVE_HOURS = process.env.KEEPALIVE_HOURS || '7-23';
+function kyivHour(date = new Date()) {
+  return Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kyiv', hour: '2-digit', hourCycle: 'h23' }).format(date));
+}
+function inKeepaliveWindow(hour, spec = KEEPALIVE_HOURS) {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(spec.trim());
+  if (!m) return false;
+  const from = Number(m[1]); const to = Number(m[2]);
+  return from <= to ? hour >= from && hour < to : hour >= from || hour < to;
+}
+function startKeepalive() {
+  if (!KEEPALIVE_URL || KEEPALIVE_HOURS === 'off') return;
+  const ping = () => {
+    if (!inKeepaliveWindow(kyivHour())) return;
+    fetch(KEEPALIVE_URL.replace(/\/$/, '') + '/api/health', { signal: AbortSignal.timeout(30000) })
+      .catch((e) => console.error('Keepalive не вдався:', e.message));
+  };
+  setInterval(ping, 10 * 60000).unref();
+  console.log(`Keepalive: ${KEEPALIVE_URL}, години ${KEEPALIVE_HOURS} за Києвом.`);
+}
+
 if (require.main === module) {
   init().then((d) => {
     server.listen(PORT, () => console.log(`Облік роти працює: http://localhost:${PORT} (база: ${d.kind})`));
+    startKeepalive();
   }).catch((e) => {
     console.error('Помилка запуску:', e.message);
     process.exit(1);
   });
 }
-module.exports = { server, init, getDb: () => db };
+module.exports = { server, init, getDb: () => db, inKeepaliveWindow, kyivHour };
