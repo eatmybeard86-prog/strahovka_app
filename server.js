@@ -1,5 +1,5 @@
 'use strict';
-// Облік надходжень і витрат роти.
+// Скриня — облік надходжень і витрат роти.
 // Дані: PostgreSQL (DATABASE_URL, напр. безкоштовна база Neon) або вбудований SQLite (Node.js 22.5+).
 
 const http = require('node:http');
@@ -562,7 +562,7 @@ function startKeepalive() {
 
 if (require.main === module) {
   init().then((d) => {
-    server.listen(PORT, () => console.log(`Облік роти працює: http://localhost:${PORT} (база: ${d.kind})`));
+    server.listen(PORT, () => console.log(`Скриня працює: http://localhost:${PORT} (база: ${d.kind})`));
     startKeepalive();
   }).catch((e) => {
     console.error('Помилка запуску:', e.message);
