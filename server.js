@@ -88,56 +88,28 @@ async function init() {
 async function sosHash() {
   return (await realDb.get("SELECT value FROM settings WHERE key = 'sos_password'"))?.value || '';
 }
-// Детермінований генератор, щоб після перезапуску приманка виглядала так само.
-function prng(seed) {
-  return () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
-}
-const DECOY_INCOME = [
-  ['Благодійний фонд «Крила»', 'Збір на потреби підрозділу'], ['Волонтери, м. Вінниця', 'Переказ на картку'],
-  ['Збір в особового складу', 'Щомісячний внесок'], ['Батьківський комітет школи №5', 'Допомога від громади'],
-  ['ФОП Мельник', 'Благодійна допомога'],
+// Кілька скромних витрат на продукти й пальне; надходження покривають їх рівно, тож баланс 0.
+const DECOY_EXPENSES = [
+  [40, 'Харчування', 'АТБ', 'Продукти', 1000],
+  [33, 'Пальне та мастила', 'АЗС ОККО', 'Дизпаливо', 5000],
+  [21, 'Харчування', 'АТБ', 'Продукти', 1000],
+  [12, 'Пальне та мастила', 'АЗС WOG', 'Бензин', 1000],
+  [5, 'Харчування', 'Сільпо', 'Продукти', 5000],
 ];
-const DECOY_EXPENSE = {
-  'Пальне та мастила': [['АЗС ОККО', 'Дизпаливо', 1800, 9000], ['АЗС WOG', 'Бензин А-95 для генератора', 900, 4000]],
-  'Харчування': [['АТБ', 'Продукти на тиждень', 1500, 6000], ['Ринок', 'Овочі, крупи', 700, 2500]],
-  'Ремонт техніки': [['СТО «Автомайстер»', 'Ремонт ходової пікапа', 4000, 18000], ['Автозапчастини', 'Фільтри, колодки', 1200, 5000]],
-  'Засоби зв’язку': [['Rozetka', 'Акумулятори до радіостанцій', 1500, 7000], ['Київстар', 'Поповнення рахунків', 300, 1200]],
-  'Медицина': [['Аптека «Подорожник»', 'Аптечки, бинти, турнікети', 800, 5000]],
-  'Спорядження та обмундирування': [['Військторг', 'Берці, рукавиці', 2000, 9000]],
-  'Фортифікація та будматеріали': [['Епіцентр', 'Мішки, дошки, цвяхи', 1500, 8000]],
-  'Дрони та комплектуючі': [['Інтернет-магазин', 'Пропелери, акумулятори', 2500, 12000]],
-  'Інше': [['Нова пошта', 'Доставка посилок', 150, 700], ['Господарський магазин', 'Побутові дрібниці', 300, 1500]],
-};
 async function decoyDatabase() {
   if (decoyDb) return decoyDb;
   const d = await openDatabase({ memory: true });
   for (const name of DEFAULT_CATEGORIES) await d.run('INSERT INTO categories (name) VALUES ($1)', [name]);
   for (const [name, kind] of DEFAULT_ACCOUNTS) await d.run('INSERT INTO accounts (name, kind) VALUES ($1, $2)', [name, kind]);
   const cats = Object.fromEntries((await d.all('SELECT id, name FROM categories')).map((c) => [c.name, c.id]));
-  const accs = (await d.all('SELECT id FROM accounts ORDER BY id')).map((a) => a.id);
-  const rnd = prng(20240224);
-  const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+  const cash = (await d.get("SELECT id FROM accounts WHERE kind = 'cash' ORDER BY id")).id;
   const day = (ago) => new Date(Date.now() - ago * 86400000).toISOString().slice(0, 10);
   const rows = [];
-  const catIds = Object.values(cats);
-  for (let ago = 75; ago >= 0; ago -= 1 + Math.floor(rnd() * 3)) {
-    if (rnd() < 0.2) {
-      const [cp, desc] = pick(DECOY_INCOME);
-      rows.push([day(ago), 'income', Math.round(20 + rnd() * 130) * 10000, pick(catIds), pick(accs), cp, desc]);
-    }
-    const name = pick(Object.keys(DECOY_EXPENSE));
-    const [cp, desc, lo, hi] = pick(DECOY_EXPENSE[name]);
-    rows.push([day(ago), 'expense', Math.round((lo + rnd() * (hi - lo)) / 10) * 1000, cats[name], pick(accs), cp, desc]);
+  // Перед кожною витратою — надходження на ту саму суму в ту саму категорію.
+  for (const [ago, cat, cp, desc, hrn] of DECOY_EXPENSES) {
+    rows.push([day(ago + 1), 'income', hrn * 100, cats[cat], cash, 'Збір в особового складу', '']);
+    rows.push([day(ago), 'expense', hrn * 100, cats[cat], cash, cp, desc]);
   }
-  // Залишок з минулого періоду для кожної категорії й рахунку, щоб баланси ніде не йшли в мінус.
-  const spent = new Map();
-  for (const r of rows) if (r[1] === 'expense') spent.set(`${r[3]}:${r[4]}`, (spent.get(`${r[3]}:${r[4]}`) || 0) + r[2]);
-  const opening = [...spent].map(([key, sum]) => {
-    const [cat, acc] = key.split(':').map(Number);
-    const amount = Math.ceil(sum / 100000) * 100000 + Math.round(2 + rnd() * 18) * 100000;
-    return [day(80), 'income', amount, cat, acc, 'Збір в особового складу', 'Залишок з минулого періоду'];
-  });
-  rows.unshift(...opening);
   for (const r of rows) {
     await d.run(`INSERT INTO transactions (date, type, amount, category_id, account_id, counterparty, description,
       created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`, [...r, `${r[0]} 12:00:00`]);
