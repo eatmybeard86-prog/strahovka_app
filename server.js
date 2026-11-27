@@ -12,7 +12,14 @@ const { openDatabase } = require('./db');
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATABASE_URL = process.env.DATABASE_URL || '';
-const SESSION_DAYS = Number(process.env.SESSION_DAYS) || 7;
+// Автоматичний вихід після стількох хвилин без дій (і на сайті, і в застосунку Android).
+const IDLE_MINUTES = Number(process.env.IDLE_MINUTES) || 5;
+const IDLE_MS = IDLE_MINUTES * 60000;
+// Сторінка повідомляє про дії не частіше ніж раз на 30–40 с, тож сервер дає невеликий запас,
+// щоб не викинути людину раніше за таймер на сторінці. Точно о 5 хв виходить сама сторінка.
+const SESSION_IDLE_MS = IDLE_MS + 45000;
+// Сам строк сесії стежить сервер; кукі лише зберігає токен (не довше доби).
+const COOKIE_MAX_AGE = 86400;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Перший адміністратор створюється з цих змінних, якщо в базі ще немає користувачів.
@@ -81,6 +88,10 @@ async function init() {
       [ADMIN_LOGIN, hashPassword(ADMIN_PASSWORD)]);
     console.log(`Створено адміністратора з логіном «${ADMIN_LOGIN}».`);
   }
+  // Сесії, видані з довшим строком (до автовиходу), закриваємо: далі всі живуть лише IDLE_MINUTES без дій.
+  for (const t of ['sessions', 'sos_sessions']) {
+    await realDb.run(`DELETE FROM ${t} WHERE expires_at > $1`, [Date.now() + SESSION_IDLE_MS + 60000]);
+  }
   return db;
 }
 
@@ -136,7 +147,7 @@ async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   await db.run('DELETE FROM sessions WHERE expires_at < $1', [Date.now()]);
   await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-    [tokenHash(token), userId, Date.now() + SESSION_DAYS * 86400000]);
+    [tokenHash(token), userId, Date.now() + SESSION_IDLE_MS]);
   return token;
 }
 // null означає доступ до всіх категорій; інакше масив дозволених id.
@@ -146,21 +157,32 @@ async function allowedCategories(user) {
     .map((r) => r.category_id);
   return ids.length ? ids : null;
 }
+// Кожен запит із сесією — це дія користувача: відсуваємо строк ще на IDLE_MINUTES.
+// Щоб не писати в базу на кожен запит, оновлюємо, коли з останнього продовження минуло понад 15 с.
+async function touchSession(table, hash, expiresAt) {
+  const next = Date.now() + SESSION_IDLE_MS;
+  if (next - Number(expiresAt) > 15000) {
+    await realDb.run(`UPDATE ${table} SET expires_at = $1 WHERE token_hash = $2`, [next, hash]);
+  }
+}
 // Повертає { user, db, decoy }: справжня сесія або сесія входу з SOS-паролем.
 async function currentSession(req) {
   const token = getCookie(req, 'sid');
   if (!token) return null;
+  const hash = tokenHash(token);
   const u = await realDb.get(`
-    SELECT u.id, u.login, u.name, u.role, u.personal_access FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.active = 1`, [tokenHash(token), Date.now()]);
+    SELECT u.id, u.login, u.name, u.role, u.personal_access, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.active = 1`, [hash, Date.now()]);
   if (u) {
-    const { personal_access: pa, ...rest } = u;
+    await touchSession('sessions', hash, u.expires_at);
+    const { personal_access: pa, expires_at: _e, ...rest } = u;
     const user = { ...rest, personal: u.role === 'admin' || Boolean(pa), categories: await allowedCategories(u) };
     return { user, db: realDb, decoy: false };
   }
-  const sos = await realDb.get('SELECT login FROM sos_sessions WHERE token_hash = $1 AND expires_at > $2',
-    [tokenHash(token), Date.now()]);
+  const sos = await realDb.get('SELECT login, expires_at FROM sos_sessions WHERE token_hash = $1 AND expires_at > $2',
+    [hash, Date.now()]);
   if (!sos) return null;
+  await touchSession('sos_sessions', hash, sos.expires_at);
   const d = await decoyDatabase();
   const du = await decoyUser(d, sos.login);
   return du ? { user: { ...du, personal: true, categories: null }, db: d, decoy: true } : null;
@@ -509,12 +531,12 @@ async function api(req, res, url) {
       const token = crypto.randomBytes(32).toString('base64url');
       await realDb.run('DELETE FROM sos_sessions WHERE expires_at < $1', [Date.now()]);
       await realDb.run('INSERT INTO sos_sessions (token_hash, login, expires_at) VALUES ($1, $2, $3)',
-        [tokenHash(token), user.login, Date.now() + SESSION_DAYS * 86400000]);
+        [tokenHash(token), user.login, Date.now() + SESSION_IDLE_MS]);
       const d = await decoyDatabase();
       const du = await decoyUser(d, user.login);
       await d.run('UPDATE users SET password_hash = $1, active = 1 WHERE id = $2', [sos, du.id]);
       await ctx.run({ db: d, decoy: true }, () => audit(du, 'Вхід'));
-      return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+      return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, COOKIE_MAX_AGE) });
     }
     if (!user || !ok || !user.active) {
       recordFailure(ip);
@@ -523,7 +545,7 @@ async function api(req, res, url) {
     attempts.delete(ip);
     await audit(user, 'Вхід');
     const token = await createSession(user.id);
-    return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+    return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, COOKIE_MAX_AGE) });
   }
   if (p === '/api/logout' && m === 'POST') {
     const token = getCookie(req, 'sid');
@@ -543,7 +565,7 @@ async function authedApi(req, res, url, user) {
   const p = url.pathname;
   const m = req.method;
 
-  if (p === '/api/session' && m === 'GET') return send(res, 200, { user, roles: ROLES });
+  if (p === '/api/session' && m === 'GET') return send(res, 200, { user, roles: ROLES, idleMinutes: IDLE_MINUTES });
 
   if (p === '/api/me/password' && m === 'POST') {
     const body = await readJson(req);

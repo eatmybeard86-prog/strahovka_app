@@ -53,6 +53,40 @@ const canEdit = () => me && (me.role === 'admin' || me.role === 'editor');
 const seesAccounts = canEdit;
 const canUseCategory = (id) => canEdit() && (!me.categories || me.categories.includes(Number(id)));
 
+// ---------- Автовихід через неактивність ----------
+// Відлік іде за годинником, а не таймером, тож спрацьовує й після сну телефону чи згорнутого застосунку.
+// Сервер окремо закриває сесію через стільки ж хвилин без запитів, тому вийде навіть закрита вкладка.
+let idleMs = 5 * 60000;
+let lastActivity = Date.now();
+let lastPing = Date.now();
+let idleLoggingOut = false;
+function markActivity() { lastActivity = Date.now(); }
+['pointerdown', 'keydown', 'touchstart', 'wheel', 'scroll', 'input'].forEach((ev) =>
+  document.addEventListener(ev, markActivity, { capture: true, passive: true }));
+document.addEventListener('mousemove', () => { if (Date.now() - lastActivity > 5000) markActivity(); }, { passive: true });
+async function checkIdle() {
+  if (!me || idleLoggingOut) return;
+  const now = Date.now();
+  if (now - lastActivity >= idleMs) {
+    idleLoggingOut = true;
+    await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+    idleLoggingOut = false;
+    document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+    showLogin();
+    $('#login-error').textContent = `Ви вийшли автоматично після ${Math.round(idleMs / 60000)} хв без дій.`;
+    return;
+  }
+  // Користувач щось робить, але без запитів до сервера (читає, гортає): продовжуємо сесію на сервері.
+  if (lastActivity > lastPing && now - lastPing >= 30000) {
+    lastPing = now;
+    api('/api/session').catch(() => {});
+  }
+}
+setInterval(checkIdle, 10000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkIdle(); });
+window.addEventListener('focus', checkIdle);
+window.addEventListener('pageshow', checkIdle);
+
 // ---------- Вхід / вихід ----------
 function showLogin() {
   me = null;
@@ -63,6 +97,8 @@ function showLogin() {
 async function showApp(session) {
   me = session.user;
   roles = session.roles;
+  if (session.idleMinutes) idleMs = session.idleMinutes * 60000;
+  lastActivity = lastPing = Date.now();
   $('#login-view').hidden = true;
   $('#app-view').hidden = false;
   $('#me-name').textContent = me.name;

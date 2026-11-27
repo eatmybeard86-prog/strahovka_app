@@ -355,3 +355,34 @@ test('SOS-пароль відкриває приманку без доступу
   assert.equal((await intruder('GET', '/api/session')).status, 401);
   assert.equal((await client()('POST', '/api/login', { login: 'admin', password: 'sos-pass-999' })).status, 401);
 });
+
+test('автовихід через 5 хвилин без дій (звичайна і SOS-сесія)', async () => {
+  const realDb = getDb();
+  const u = client();
+  assert.equal((await u('POST', '/api/login', { login: 'admin', password: 'admin-pass-123' })).status, 200);
+  const s = await u('GET', '/api/session');
+  assert.equal(s.status, 200);
+  assert.equal(s.data.idleMinutes, 5);
+  // Строк сесії — 5 хвилин (плюс невеликий запас), а не дні.
+  const newest = async (t) => Number((await realDb.get(`SELECT MAX(expires_at) AS e FROM ${t}`)).e);
+  const left = (await newest('sessions')) - Date.now();
+  assert.ok(left > 4 * 60000 && left <= 6 * 60000, `залишок ${left} мс`);
+  // Запит продовжує сесію: відсунемо строк майже до кінця і перевіримо, що він знову ~5 хв.
+  await realDb.run('UPDATE sessions SET expires_at = $1 WHERE expires_at = $2', [Date.now() + 1000, await newest('sessions')]);
+  assert.equal((await u('GET', '/api/session')).status, 200);
+  assert.ok((await newest('sessions')) - Date.now() > 4 * 60000);
+  // Після 5 хвилин без дій — потрібен новий вхід.
+  await realDb.run('UPDATE sessions SET expires_at = $1 WHERE expires_at = $2', [Date.now() - 1, await newest('sessions')]);
+  assert.equal((await u('GET', '/api/session')).status, 401);
+
+  // SOS-сесія так само.
+  assert.equal((await admin('PUT', '/api/sos', { password: 'sos-pass-777', current: 'admin-pass-123' })).status, 200);
+  const intruder = client();
+  assert.equal((await intruder('POST', '/api/login', { login: 'admin', password: 'sos-pass-777' })).status, 200);
+  assert.equal((await intruder('GET', '/api/session')).status, 200);
+  const sosLeft = (await newest('sos_sessions')) - Date.now();
+  assert.ok(sosLeft > 4 * 60000 && sosLeft <= 6 * 60000);
+  await realDb.run('UPDATE sos_sessions SET expires_at = $1', [Date.now() - 1]);
+  assert.equal((await intruder('GET', '/api/session')).status, 401);
+  assert.equal((await admin('DELETE', '/api/sos', { current: 'admin-pass-123' })).status, 200);
+});
