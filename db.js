@@ -51,6 +51,7 @@ const SQLITE_SCHEMA = `
     amount INTEGER NOT NULL CHECK (amount > 0),
     category_id INTEGER NOT NULL REFERENCES categories(id),
     counterparty TEXT NOT NULL DEFAULT '',
+    spent_by TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -146,6 +147,7 @@ const PG_SCHEMA = `
     amount BIGINT NOT NULL CHECK (amount > 0),
     category_id INTEGER NOT NULL REFERENCES categories(id),
     counterparty TEXT NOT NULL DEFAULT '',
+    spent_by TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT ${PG_NOW},
     updated_at TEXT NOT NULL DEFAULT ${PG_NOW},
@@ -212,6 +214,8 @@ function openSqlite(dataDir, memory = false) {
   if (!cols.includes('updated_by')) db.exec('ALTER TABLE transactions ADD COLUMN updated_by INTEGER REFERENCES users(id)');
   // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
   if (!cols.includes('account_id')) db.exec('ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES accounts(id)');
+  // Хто витратив кошти (для витрат; додано пізніше).
+  if (!cols.includes('spent_by')) db.exec("ALTER TABLE transactions ADD COLUMN spent_by TEXT NOT NULL DEFAULT ''");
 
   const prep = (sql) => db.prepare(sql.replace(/\$(\d+)/g, '?$1'));
   const plain = (rows) => rows.map((r) => ({ ...r }));
@@ -240,6 +244,8 @@ async function openPostgres(url) {
   await pool.query(PG_SCHEMA);
   // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
   await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id)');
+  // Хто витратив кошти (для витрат; додано пізніше).
+  await pool.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS spent_by TEXT NOT NULL DEFAULT ''");
   return {
     kind: 'postgres',
     like: 'ILIKE',
