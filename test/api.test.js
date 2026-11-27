@@ -160,6 +160,27 @@ test('створення користувачів і перевірка прав
   assert.ok(log.some((r) => r.action === 'Видалення операції' && r.user_name.includes('editor1')));
 });
 
+test('журнал і список показують, від кого надходження і хто витратив', async () => {
+  const inc = (await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-25', type: 'income', amount: '700', category_id: food, counterparty: 'Батьківський комітет' })).data.id;
+  const exp = (await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-26', type: 'expense', amount: '300', category_id: food, counterparty: 'АТБ', spent_by: 'Сидоренко' })).data.id;
+  // Для надходження «хто витратив» не зберігається.
+  const inc2 = (await admin('POST', '/api/transactions', { account_id: cash, date: '2026-11-26', type: 'income', amount: '1', category_id: food, spent_by: 'Хтось' })).data.id;
+  const rows = (await admin('GET', '/api/transactions')).data;
+  assert.equal(rows.find((t) => t.id === exp).spent_by, 'Сидоренко');
+  assert.equal(rows.find((t) => t.id === inc2).spent_by, '');
+  assert.equal((await viewer('GET', '/api/transactions?q=Сидоренко')).data.length, 1);
+
+  const log = (await admin('GET', '/api/audit')).data.map((r) => r.details);
+  assert.ok(log.some((d) => d.startsWith('Надходження 700') && d.includes('від кого: Батьківський комітет')));
+  assert.ok(log.some((d) => d.startsWith('Витрата 300') && d.includes('витратив: Сидоренко') && d.includes('кому: АТБ')));
+
+  const t = rows.find((r) => r.id === exp);
+  assert.equal((await admin('PUT', `/api/transactions/${exp}`, { ...t, amount: '300', spent_by: 'Петренко' })).status, 200);
+  assert.ok((await admin('GET', '/api/audit')).data.some((r) => r.action === 'Зміна операції' && r.details.includes('стало:') && r.details.includes('витратив: Петренко')));
+  assert.ok((await admin('GET', '/api/export.csv')).data.includes('Петренко'));
+  for (const id of [inc, exp, inc2]) assert.equal((await admin('DELETE', `/api/transactions/${id}`)).status, 200);
+});
+
 test('особисті борги й витрати: окремо від коштів роти, права за ролями', async () => {
   const before = (await admin('GET', '/api/summary')).data.total;
 
