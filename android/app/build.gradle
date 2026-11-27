@@ -26,9 +26,10 @@ android {
     // Постійний ключ підпису беремо з секретів GitHub (див. android/README.md).
     // Без нього APK підписується тимчасовим ключем збірки.
     def ks = System.getenv('SIGNING_KEYSTORE')
+    def hasKey = ks != null && !ks.isEmpty() && file(ks).exists()
     signingConfigs {
         release {
-            if (ks && file(ks).exists()) {
+            if (hasKey) {
                 storeFile file(ks)
                 storePassword System.getenv('SIGNING_STORE_PASSWORD')
                 keyAlias System.getenv('SIGNING_KEY_ALIAS') ?: 'skrynya'
@@ -40,7 +41,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig (ks && file(ks).exists()) ? signingConfigs.release : signingConfigs.debug
+            signingConfig = hasKey ? signingConfigs.release : signingConfigs.debug
         }
     }
 
