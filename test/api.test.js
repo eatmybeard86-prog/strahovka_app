@@ -258,3 +258,57 @@ test('вікно keepalive за київським часом', () => {
   // 2026-01-15 10:00 UTC — це 12:00 у Києві (зимовий час, UTC+2).
   assert.equal(kyivHour(new Date('2026-01-15T10:00:00Z')), 12);
 });
+
+test('SOS-пароль відкриває приманку без доступу до справжніх даних', async () => {
+  const real = (await admin('GET', '/api/transactions')).data;
+  const realSummary = (await admin('GET', '/api/summary')).data;
+  // Задати SOS-пароль може лише адміністратор, з підтвердженням справжнім паролем.
+  const ed = client();
+  assert.equal((await ed('POST', '/api/login', { login: 'editor1', password: 'new-pass-123' })).status, 200);
+  assert.equal((await ed('GET', '/api/sos')).status, 403);
+  assert.equal((await admin('GET', '/api/sos')).data.set, false);
+  assert.equal((await admin('PUT', '/api/sos', { password: 'sos-pass-999', current: 'wrong' })).status, 400);
+  assert.equal((await admin('PUT', '/api/sos', { password: 'admin-pass-123', current: 'admin-pass-123' })).status, 400);
+  assert.equal((await admin('PUT', '/api/sos', { password: 'sos-pass-999', current: 'admin-pass-123' })).status, 200);
+  assert.equal((await admin('GET', '/api/sos')).data.set, true);
+  // Справжній пароль не може збігатися з SOS.
+  assert.equal((await admin('POST', '/api/me/password', { current: 'admin-pass-123', password: 'sos-pass-999' })).status, 400);
+  // SOS-пароль з логіном не-адміністратора не працює.
+  assert.equal((await client()('POST', '/api/login', { login: 'editor1', password: 'sos-pass-999' })).status, 401);
+
+  const intruder = client();
+  assert.equal((await intruder('POST', '/api/login', { login: 'admin', password: 'sos-pass-999' })).status, 200);
+  const s = (await intruder('GET', '/api/session')).data;
+  assert.equal(s.user.role, 'admin');
+  assert.equal(s.user.login, 'admin');
+  const fake = (await intruder('GET', '/api/transactions')).data;
+  assert.ok(fake.length > 10, 'приманка не порожня');
+  const realIds = new Set(real.map((t) => t.description));
+  assert.ok(!fake.some((t) => realIds.has(t.description) && t.description.startsWith('Тест')));
+  assert.notDeepEqual((await intruder('GET', '/api/summary')).data.total, realSummary.total);
+  const fakeUsers = (await intruder('GET', '/api/users')).data;
+  assert.deepEqual(fakeUsers.map((u) => u.login), ['admin']);
+  assert.equal((await intruder('GET', '/api/sos')).status, 404);
+
+  // Зміни в приманці не торкаються справжніх даних.
+  const cat = (await intruder('GET', '/api/categories')).data[0].id;
+  const acc = (await intruder('GET', '/api/accounts')).data[0].id;
+  assert.equal((await intruder('POST', '/api/transactions', { date: '2026-01-05', type: 'expense', amount: '1', category_id: cat, account_id: acc, description: 'від зловмисника' })).status, 201);
+  for (const t of fake.slice(0, 3)) assert.equal((await intruder('DELETE', '/api/transactions/' + t.id)).status, 200);
+  assert.deepEqual((await admin('GET', '/api/transactions')).data, real);
+  assert.deepEqual((await admin('GET', '/api/summary')).data, realSummary);
+
+  // Справжній журнал знає про SOS-вхід, журнал приманки — ні.
+  assert.ok((await admin('GET', '/api/audit')).data.some((r) => r.action === 'Вхід із SOS-паролем'));
+  assert.ok(!(await intruder('GET', '/api/audit')).data.some((r) => /SOS/.test(r.action)));
+
+  // Справжній пароль і далі відкриває справжні дані.
+  const again = client();
+  assert.equal((await again('POST', '/api/login', { login: 'admin', password: 'admin-pass-123' })).status, 200);
+  assert.deepEqual((await again('GET', '/api/transactions')).data, real);
+
+  // Вимкнення SOS-пароля завершує сесії-приманки.
+  assert.equal((await admin('DELETE', '/api/sos', { current: 'admin-pass-123' })).status, 200);
+  assert.equal((await intruder('GET', '/api/session')).status, 401);
+  assert.equal((await client()('POST', '/api/login', { login: 'admin', password: 'sos-pass-999' })).status, 401);
+});

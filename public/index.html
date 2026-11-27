@@ -324,6 +324,19 @@
             <tbody id="user-body"></tbody>
           </table>
         </div>
+        <form id="sos-form" class="card stack" hidden>
+          <h2>SOS-пароль</h2>
+          <p class="muted">Якщо вас змушують увійти, введіть свій логін і SOS-пароль замість справжнього. Відкриється звичайний на вигляд застосунок із вигаданими операціями: справжніх даних там не видно, і змінити їх звідти неможливо. Такий вхід записується в журнал. <span id="sos-state"></span></p>
+          <div class="grid">
+            <label>Новий SOS-пароль (щонайменше 8 символів) <input type="password" name="password" autocomplete="new-password" minlength="8"></label>
+            <label>Ваш справжній пароль для підтвердження <input type="password" name="current" autocomplete="current-password" required></label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary">Зберегти SOS-пароль</button>
+            <button type="button" class="ghost danger" id="sos-off" hidden>Вимкнути SOS-пароль</button>
+          </div>
+          <p id="sos-error" class="error" role="alert"></p>
+        </form>
         <p class="muted">Переглядати звіт і операції можуть усі користувачі. Редактор вносить, змінює й видаляє операції (лише у своїх категоріях, якщо їх обмежено). Адміністратор керує категоріями, користувачами й бачить журнал дій.</p>
       </section>
 

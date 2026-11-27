@@ -6,6 +6,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { openDatabase } = require('./db');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -27,7 +28,23 @@ const DEFAULT_CATEGORIES = [
   'Дрони та комплектуючі', 'Інше',
 ];
 
-let db; // встановлюється в init()
+// ---------- База і SOS-режим ----------
+// Після входу з SOS-паролем увесь запит працює з окремою базою-приманкою в пам'яті:
+// вона виглядає як звичайна (категорії, рахунки, операції), але справжніх даних там немає,
+// і змінити справжні дані з такої сесії неможливо. Вибір бази — через AsyncLocalStorage.
+let realDb; // встановлюється в init()
+let decoyDb = null;
+const ctx = new AsyncLocalStorage();
+const curDb = () => ctx.getStore()?.db || realDb;
+const isDecoy = () => Boolean(ctx.getStore()?.decoy);
+const db = {
+  get kind() { return curDb().kind; },
+  get like() { return curDb().like; },
+  all: (...a) => curDb().all(...a),
+  get: (...a) => curDb().get(...a),
+  run: (...a) => curDb().run(...a),
+  close: () => realDb.close(),
+};
 const nowText = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 
 // ---------- Паролі ----------
@@ -48,7 +65,8 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 
 // ---------- Ініціалізація ----------
 async function init() {
-  db = await openDatabase({ databaseUrl: DATABASE_URL, dataDir: DATA_DIR });
+  realDb = await openDatabase({ databaseUrl: DATABASE_URL, dataDir: DATA_DIR });
+  decoyDb = null;
   if ((await db.get('SELECT COUNT(*) AS n FROM categories')).n === 0) {
     for (const name of DEFAULT_CATEGORIES) await db.run('INSERT INTO categories (name) VALUES ($1)', [name]);
   }
@@ -64,6 +82,80 @@ async function init() {
     console.log(`Створено адміністратора з логіном «${ADMIN_LOGIN}».`);
   }
   return db;
+}
+
+// ---------- SOS-пароль і база-приманка ----------
+async function sosHash() {
+  return (await realDb.get("SELECT value FROM settings WHERE key = 'sos_password'"))?.value || '';
+}
+// Детермінований генератор, щоб після перезапуску приманка виглядала так само.
+function prng(seed) {
+  return () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+}
+const DECOY_INCOME = [
+  ['Благодійний фонд «Крила»', 'Збір на потреби підрозділу'], ['Волонтери, м. Вінниця', 'Переказ на картку'],
+  ['Збір в особового складу', 'Щомісячний внесок'], ['Батьківський комітет школи №5', 'Допомога від громади'],
+  ['ФОП Мельник', 'Благодійна допомога'],
+];
+const DECOY_EXPENSE = {
+  'Пальне та мастила': [['АЗС ОККО', 'Дизпаливо', 1800, 9000], ['АЗС WOG', 'Бензин А-95 для генератора', 900, 4000]],
+  'Харчування': [['АТБ', 'Продукти на тиждень', 1500, 6000], ['Ринок', 'Овочі, крупи', 700, 2500]],
+  'Ремонт техніки': [['СТО «Автомайстер»', 'Ремонт ходової пікапа', 4000, 18000], ['Автозапчастини', 'Фільтри, колодки', 1200, 5000]],
+  'Засоби зв’язку': [['Rozetka', 'Акумулятори до радіостанцій', 1500, 7000], ['Київстар', 'Поповнення рахунків', 300, 1200]],
+  'Медицина': [['Аптека «Подорожник»', 'Аптечки, бинти, турнікети', 800, 5000]],
+  'Спорядження та обмундирування': [['Військторг', 'Берці, рукавиці', 2000, 9000]],
+  'Фортифікація та будматеріали': [['Епіцентр', 'Мішки, дошки, цвяхи', 1500, 8000]],
+  'Дрони та комплектуючі': [['Інтернет-магазин', 'Пропелери, акумулятори', 2500, 12000]],
+  'Інше': [['Нова пошта', 'Доставка посилок', 150, 700], ['Господарський магазин', 'Побутові дрібниці', 300, 1500]],
+};
+async function decoyDatabase() {
+  if (decoyDb) return decoyDb;
+  const d = await openDatabase({ memory: true });
+  for (const name of DEFAULT_CATEGORIES) await d.run('INSERT INTO categories (name) VALUES ($1)', [name]);
+  for (const [name, kind] of DEFAULT_ACCOUNTS) await d.run('INSERT INTO accounts (name, kind) VALUES ($1, $2)', [name, kind]);
+  const cats = Object.fromEntries((await d.all('SELECT id, name FROM categories')).map((c) => [c.name, c.id]));
+  const accs = (await d.all('SELECT id FROM accounts ORDER BY id')).map((a) => a.id);
+  const rnd = prng(20240224);
+  const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+  const day = (ago) => new Date(Date.now() - ago * 86400000).toISOString().slice(0, 10);
+  const rows = [];
+  const catIds = Object.values(cats);
+  for (let ago = 75; ago >= 0; ago -= 1 + Math.floor(rnd() * 3)) {
+    if (rnd() < 0.2) {
+      const [cp, desc] = pick(DECOY_INCOME);
+      rows.push([day(ago), 'income', Math.round(20 + rnd() * 130) * 10000, pick(catIds), pick(accs), cp, desc]);
+    }
+    const name = pick(Object.keys(DECOY_EXPENSE));
+    const [cp, desc, lo, hi] = pick(DECOY_EXPENSE[name]);
+    rows.push([day(ago), 'expense', Math.round((lo + rnd() * (hi - lo)) / 10) * 1000, cats[name], pick(accs), cp, desc]);
+  }
+  // Залишок з минулого періоду для кожної категорії й рахунку, щоб баланси ніде не йшли в мінус.
+  const spent = new Map();
+  for (const r of rows) if (r[1] === 'expense') spent.set(`${r[3]}:${r[4]}`, (spent.get(`${r[3]}:${r[4]}`) || 0) + r[2]);
+  const opening = [...spent].map(([key, sum]) => {
+    const [cat, acc] = key.split(':').map(Number);
+    const amount = Math.ceil(sum / 100000) * 100000 + Math.round(2 + rnd() * 18) * 100000;
+    return [day(80), 'income', amount, cat, acc, 'Збір в особового складу', 'Залишок з минулого періоду'];
+  });
+  rows.unshift(...opening);
+  for (const r of rows) {
+    await d.run(`INSERT INTO transactions (date, type, amount, category_id, account_id, counterparty, description,
+      created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`, [...r, `${r[0]} 12:00:00`]);
+  }
+  decoyDb = d;
+  return d;
+}
+// Користувач-двійник у приманці: той самий логін і ім'я, що в справжнього адміністратора.
+async function decoyUser(d, login) {
+  let u = await d.get('SELECT id, login, name, role FROM users WHERE login = $1', [login]);
+  if (!u) {
+    const real = await realDb.get('SELECT login, name FROM users WHERE login = $1', [login]);
+    if (!real) return null;
+    u = await d.get("INSERT INTO users (login, name, role, password_hash) VALUES ($1, $2, 'admin', $3) RETURNING id, login, name, role",
+      [real.login, real.name, (await sosHash()) || DUMMY_HASH]);
+    await d.run('UPDATE transactions SET created_by = COALESCE(created_by, $1), updated_by = COALESCE(updated_by, $1)', [u.id]);
+  }
+  return u;
 }
 
 // ---------- Сесії ----------
@@ -82,13 +174,20 @@ async function allowedCategories(user) {
     .map((r) => r.category_id);
   return ids.length ? ids : null;
 }
-async function currentUser(req) {
+// Повертає { user, db, decoy }: справжня сесія або сесія входу з SOS-паролем.
+async function currentSession(req) {
   const token = getCookie(req, 'sid');
   if (!token) return null;
-  const u = await db.get(`
+  const u = await realDb.get(`
     SELECT u.id, u.login, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.active = 1`, [tokenHash(token), Date.now()]);
-  return u ? { ...u, categories: await allowedCategories(u) } : null;
+  if (u) return { user: { ...u, categories: await allowedCategories(u) }, db: realDb, decoy: false };
+  const sos = await realDb.get('SELECT login FROM sos_sessions WHERE token_hash = $1 AND expires_at > $2',
+    [tokenHash(token), Date.now()]);
+  if (!sos) return null;
+  const d = await decoyDatabase();
+  const du = await decoyUser(d, sos.login);
+  return du ? { user: { ...du, categories: null }, db: d, decoy: true } : null;
 }
 function getCookie(req, name) {
   const header = req.headers.cookie || '';
@@ -337,6 +436,12 @@ function validatePassword(pw) {
   if (typeof pw !== 'string' || pw.length < 8) throw new HttpError(400, 'Пароль має містити щонайменше 8 символів');
   if (pw.length > 200) throw new HttpError(400, 'Пароль задовгий');
 }
+// Справжній пароль не може збігатися з SOS-паролем, інакше вхід був би неоднозначним.
+async function rejectSosPassword(pw) {
+  if (isDecoy()) return;
+  const sos = await sosHash();
+  if (sos && verifyPassword(pw, sos)) throw new HttpError(400, 'Цей пароль не можна використати, оберіть інший');
+}
 async function setUserCategories(userId, ids) {
   await db.run('DELETE FROM user_categories WHERE user_id = $1', [userId]);
   const existing = new Set((await db.all('SELECT id FROM categories')).map((c) => c.id));
@@ -414,6 +519,21 @@ async function api(req, res, url) {
     const login = cleanText(body.login, 64).toLowerCase();
     const user = await db.get('SELECT * FROM users WHERE login = $1', [login]);
     const ok = verifyPassword(body.password ?? '', user ? user.password_hash : DUMMY_HASH);
+    // SOS-пароль діє з логіном будь-якого активного адміністратора і відкриває базу-приманку.
+    const sos = !ok && user?.active && user.role === 'admin' ? await sosHash() : '';
+    if (sos && verifyPassword(body.password ?? '', sos)) {
+      attempts.delete(ip);
+      await audit(user, 'Вхід із SOS-паролем', `адреса: ${ip}`);
+      const token = crypto.randomBytes(32).toString('base64url');
+      await realDb.run('DELETE FROM sos_sessions WHERE expires_at < $1', [Date.now()]);
+      await realDb.run('INSERT INTO sos_sessions (token_hash, login, expires_at) VALUES ($1, $2, $3)',
+        [tokenHash(token), user.login, Date.now() + SESSION_DAYS * 86400000]);
+      const d = await decoyDatabase();
+      const du = await decoyUser(d, user.login);
+      await d.run('UPDATE users SET password_hash = $1, active = 1 WHERE id = $2', [sos, du.id]);
+      await ctx.run({ db: d, decoy: true }, () => audit(du, 'Вхід'));
+      return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+    }
     if (!user || !ok || !user.active) {
       recordFailure(ip);
       throw new HttpError(401, 'Невірний логін або пароль');
@@ -425,12 +545,21 @@ async function api(req, res, url) {
   }
   if (p === '/api/logout' && m === 'POST') {
     const token = getCookie(req, 'sid');
-    if (token) await db.run('DELETE FROM sessions WHERE token_hash = $1', [tokenHash(token)]);
+    if (token) {
+      await realDb.run('DELETE FROM sessions WHERE token_hash = $1', [tokenHash(token)]);
+      await realDb.run('DELETE FROM sos_sessions WHERE token_hash = $1', [tokenHash(token)]);
+    }
     return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
   }
 
-  const user = await currentUser(req);
-  if (!user) throw new HttpError(401, 'Потрібен вхід');
+  const session = await currentSession(req);
+  if (!session) throw new HttpError(401, 'Потрібен вхід');
+  return ctx.run({ db: session.db, decoy: session.decoy }, () => authedApi(req, res, url, session.user));
+}
+
+async function authedApi(req, res, url, user) {
+  const p = url.pathname;
+  const m = req.method;
 
   if (p === '/api/session' && m === 'GET') return send(res, 200, { user, roles: ROLES });
 
@@ -439,11 +568,37 @@ async function api(req, res, url) {
     const row = await db.get('SELECT password_hash FROM users WHERE id = $1', [user.id]);
     if (!verifyPassword(body.current ?? '', row.password_hash)) throw new HttpError(400, 'Поточний пароль невірний');
     validatePassword(body.password);
+    await rejectSosPassword(body.password);
     await db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [hashPassword(body.password), user.id]);
     // Завершуємо інші сесії цього користувача, поточну залишаємо.
     await db.run('DELETE FROM sessions WHERE user_id = $1 AND token_hash != $2', [user.id, tokenHash(getCookie(req, 'sid'))]);
     await audit(user, 'Зміна власного пароля');
     return send(res, 200, { ok: true });
+  }
+
+  // SOS-пароль: налаштовує адміністратор. У сесії-приманці цього розділу «не існує».
+  if (p === '/api/sos' && !isDecoy()) {
+    requireRole(user, 'admin');
+    if (m === 'GET') return send(res, 200, { set: Boolean(await sosHash()) });
+    const body = await readJson(req);
+    const row = await db.get('SELECT password_hash FROM users WHERE id = $1', [user.id]);
+    if (!verifyPassword(body.current ?? '', row.password_hash)) throw new HttpError(400, 'Ваш поточний пароль невірний');
+    if (m === 'PUT') {
+      validatePassword(body.password);
+      for (const a of await db.all("SELECT password_hash FROM users WHERE role = 'admin'")) {
+        if (verifyPassword(body.password, a.password_hash)) throw new HttpError(400, 'SOS-пароль має відрізнятися від справжнього пароля адміністратора');
+      }
+      await db.run(`INSERT INTO settings (key, value) VALUES ('sos_password', $1)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [hashPassword(body.password)]);
+      await audit(user, 'Зміна SOS-пароля');
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'DELETE') {
+      await db.run("DELETE FROM settings WHERE key = 'sos_password'");
+      await db.run('DELETE FROM sos_sessions');
+      await audit(user, 'Вимкнення SOS-пароля');
+      return send(res, 200, { ok: true });
+    }
   }
 
   // Категорії: переглядати можуть усі, змінювати — адміністратор.
@@ -728,7 +883,7 @@ async function api(req, res, url) {
     const role = body.role === undefined ? target.role : body.role;
     if (!ROLES[role]) throw new HttpError(400, 'Оберіть роль');
     const active = body.active === undefined ? target.active : (body.active ? 1 : 0);
-    if (body.password) validatePassword(body.password);
+    if (body.password) { validatePassword(body.password); await rejectSosPassword(body.password); }
     if (target.role === 'admin' && target.active && (role !== 'admin' || !active) && (await activeAdmins(id)) === 0) {
       throw new HttpError(409, 'Має залишитися хоча б один активний адміністратор');
     }
