@@ -68,6 +68,7 @@ async function showApp(session) {
   $('#me-name').textContent = me.name;
   $('#me-role').textContent = roles[me.role];
   $$('[data-admin]').forEach((n) => { n.hidden = !isAdmin(); });
+  $$('[data-personal]').forEach((n) => { n.hidden = !me.personal; });
   $('#tx-form').hidden = !canEdit();
   $$('[data-editor]').forEach((n) => { n.hidden = !canEdit(); });
   $$('[data-accounts]').forEach((n) => { n.hidden = !seesAccounts(); });
@@ -122,7 +123,7 @@ function switchTab(name) {
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
   if (name === 'accounts') loadAccounts();
-  if (name === 'personal' && me) loadPersonal();
+  if (name === 'personal' && me?.personal) loadPersonal();
 }
 $$('.tabs button').forEach((btn) => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
@@ -645,7 +646,11 @@ function renderUserCats(selected = []) {
     .map((c) => el('label', { class: 'check' },
       el('input', { type: 'checkbox', value: c.id, checked: selected.includes(c.id) }), c.name)));
 }
-function updateUserCatsVisibility() { $('#user-cats').hidden = userForm.role.value !== 'editor'; }
+function updateUserCatsVisibility() {
+  $('#user-cats').hidden = userForm.role.value !== 'editor';
+  // Адміністратор бачить «Особисте» завжди, тож галочка потрібна лише іншим ролям.
+  $('#user-personal').hidden = userForm.role.value === 'admin';
+}
 userForm.role.addEventListener('change', updateUserCatsVisibility);
 
 function resetUserForm() {
@@ -669,6 +674,7 @@ function editUser(u) {
   userForm.login.disabled = true;
   userForm.name.value = u.name;
   userForm.role.value = u.role;
+  userForm.personal.checked = u.personal;
   userForm.password.value = '';
   userForm.password.required = false;
   $('#user-pw-label').textContent = 'Новий пароль (залиште порожнім, щоб не змінювати)';
@@ -687,6 +693,7 @@ userForm.addEventListener('submit', async (e) => {
   const body = {
     name: userForm.name.value,
     role: userForm.role.value,
+    personal: userForm.personal.checked,
     categories: $$('#user-cats-list input:checked').map((i) => Number(i.value)),
   };
   if (userForm.password.value) body.password = userForm.password.value;
@@ -711,6 +718,15 @@ async function toggleUser(u) {
   } catch (err) { $('#user-error').textContent = err.message; }
 }
 
+async function togglePersonal(u) {
+  const q = u.personal ? `Закрити для ${u.name} доступ до розділу «Особисте»?` : `Надати ${u.name} доступ до розділу «Особисте»?`;
+  if (!confirm(q)) return;
+  try {
+    await api('/api/users/' + u.id, { method: 'PUT', body: { personal: !u.personal } });
+    await loadUsers();
+  } catch (err) { $('#user-error').textContent = err.message; }
+}
+
 async function loadUsers() {
   if (!isAdmin()) return;
   if (!editingUserId) resetUserForm();
@@ -722,6 +738,10 @@ async function loadUsers() {
     el('td', {}, u.login),
     el('td', {}, roles[u.role]),
     el('td', { class: 'small' }, u.role !== 'editor' ? '—' : (u.categories.length ? u.categories.map(catName).join(', ') : 'усі')),
+    el('td', {}, u.role === 'admin' ? 'завжди' : el('button', {
+      class: 'link', title: u.personal ? 'Закрити доступ' : 'Надати доступ',
+      onclick: () => togglePersonal(u),
+    }, u.personal ? 'дозволено' : 'закрито')),
     el('td', {}, u.active ? 'Активний' : 'Вимкнений'),
     el('td', { class: 'row-actions' },
       el('button', { class: 'link', onclick: () => editUser(u) }, 'Змінити'),

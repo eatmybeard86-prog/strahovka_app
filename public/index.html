@@ -41,7 +41,7 @@
       <nav class="tabs" role="tablist">
         <button data-tab="summary" class="active">Звіт</button>
         <button data-tab="transactions">Операції</button>
-        <button data-tab="personal">Особисте</button>
+        <button data-tab="personal" data-personal>Особисте</button>
         <button data-tab="categories" data-admin>Категорії</button>
         <button data-tab="accounts" data-admin>Рахунки</button>
         <button data-tab="users" data-admin>Користувачі</button>
@@ -309,6 +309,7 @@
             </label>
             <label><span id="user-pw-label">Пароль (щонайменше 8 символів)</span> <input type="password" name="password" autocomplete="new-password" minlength="8"></label>
           </div>
+          <label id="user-personal" class="check"><input type="checkbox" name="personal"> Доступ до розділу «Особисте» (особисті борги та витрати)</label>
           <fieldset id="user-cats" class="cat-picker">
             <legend>Категорії, з якими може працювати редактор <span class="muted">(нічого не вибрано = усі)</span></legend>
             <div id="user-cats-list" class="checks"></div>
@@ -321,7 +322,7 @@
         </form>
         <div class="card table-wrap">
           <table class="data">
-            <thead><tr><th>Ім'я, посада</th><th>Логін</th><th>Роль</th><th>Доступ до категорій</th><th>Стан</th><th></th></tr></thead>
+            <thead><tr><th>Ім'я, посада</th><th>Логін</th><th>Роль</th><th>Доступ до категорій</th><th>«Особисте»</th><th>Стан</th><th></th></tr></thead>
             <tbody id="user-body"></tbody>
           </table>
         </div>
@@ -338,7 +339,7 @@
           </div>
           <p id="sos-error" class="error" role="alert"></p>
         </form>
-        <p class="muted">Переглядати звіт і операції можуть усі користувачі. Редактор вносить, змінює й видаляє операції (лише у своїх категоріях, якщо їх обмежено). Адміністратор керує категоріями, користувачами й бачить журнал дій.</p>
+        <p class="muted">Переглядати звіт і операції можуть усі користувачі. Редактор вносить, змінює й видаляє операції (лише у своїх категоріях, якщо їх обмежено). Адміністратор керує категоріями, користувачами й бачить журнал дій. Розділ «Особисте» бачать лише адміністратори й ті, кому адміністратор надав доступ.</p>
       </section>
 
       <!-- Журнал -->
