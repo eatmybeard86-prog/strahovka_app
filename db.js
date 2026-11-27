@@ -52,6 +52,7 @@ const SQLITE_SCHEMA = `
     amount INTEGER NOT NULL CHECK (amount > 0),
     category_id INTEGER NOT NULL REFERENCES categories(id),
     counterparty TEXT NOT NULL DEFAULT '',
+    spent_by TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -148,6 +149,7 @@ const PG_SCHEMA = `
     amount BIGINT NOT NULL CHECK (amount > 0),
     category_id INTEGER NOT NULL REFERENCES categories(id),
     counterparty TEXT NOT NULL DEFAULT '',
+    spent_by TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT ${PG_NOW},
     updated_at TEXT NOT NULL DEFAULT ${PG_NOW},
@@ -217,6 +219,8 @@ function openSqlite(dataDir, memory = false) {
   // Доступ до розділу «Особисте» (адміністратор має його завжди, іншим вмикає адміністратор).
   const ucols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   if (!ucols.includes('personal_access')) db.exec('ALTER TABLE users ADD COLUMN personal_access INTEGER NOT NULL DEFAULT 0');
+  // Хто витратив кошти (для витрат; додано пізніше).
+  if (!cols.includes('spent_by')) db.exec("ALTER TABLE transactions ADD COLUMN spent_by TEXT NOT NULL DEFAULT ''");
 
   const prep = (sql) => db.prepare(sql.replace(/\$(\d+)/g, '?$1'));
   const plain = (rows) => rows.map((r) => ({ ...r }));
@@ -247,6 +251,8 @@ async function openPostgres(url) {
   await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id)');
   // Доступ до розділу «Особисте» (адміністратор має його завжди, іншим вмикає адміністратор).
   await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_access INTEGER NOT NULL DEFAULT 0');
+  // Хто витратив кошти (для витрат; додано пізніше).
+  await pool.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS spent_by TEXT NOT NULL DEFAULT ''");
   return {
     kind: 'postgres',
     like: 'ILIKE',

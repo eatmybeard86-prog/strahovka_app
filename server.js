@@ -90,11 +90,11 @@ async function sosHash() {
 }
 // Кілька скромних витрат на продукти й пальне; надходження покривають їх рівно, тож баланс 0.
 const DECOY_EXPENSES = [
-  [40, 'Харчування', 'АТБ', 'Продукти', 1000],
-  [33, 'Пальне та мастила', 'АЗС ОККО', 'Дизпаливо', 5000],
-  [21, 'Харчування', 'АТБ', 'Продукти', 1000],
-  [12, 'Пальне та мастила', 'АЗС WOG', 'Бензин', 1000],
-  [5, 'Харчування', 'Сільпо', 'Продукти', 5000],
+  [40, 'Харчування', 'АТБ', 'Продукти', 1000, 'Коваленко'],
+  [33, 'Пальне та мастила', 'АЗС ОККО', 'Дизпаливо', 5000, 'Мельник'],
+  [21, 'Харчування', 'АТБ', 'Продукти', 1000, 'Коваленко'],
+  [12, 'Пальне та мастила', 'АЗС WOG', 'Бензин', 1000, 'Мельник'],
+  [5, 'Харчування', 'Сільпо', 'Продукти', 5000, 'Коваленко'],
 ];
 async function decoyDatabase() {
   if (decoyDb) return decoyDb;
@@ -106,13 +106,13 @@ async function decoyDatabase() {
   const day = (ago) => new Date(Date.now() - ago * 86400000).toISOString().slice(0, 10);
   const rows = [];
   // Перед кожною витратою — надходження на ту саму суму в ту саму категорію.
-  for (const [ago, cat, cp, desc, hrn] of DECOY_EXPENSES) {
-    rows.push([day(ago + 1), 'income', hrn * 100, cats[cat], cash, 'Збір в особового складу', '']);
-    rows.push([day(ago), 'expense', hrn * 100, cats[cat], cash, cp, desc]);
+  for (const [ago, cat, cp, desc, hrn, who] of DECOY_EXPENSES) {
+    rows.push([day(ago + 1), 'income', hrn * 100, cats[cat], cash, 'Збір в особового складу', '', '']);
+    rows.push([day(ago), 'expense', hrn * 100, cats[cat], cash, cp, who, desc]);
   }
   for (const r of rows) {
-    await d.run(`INSERT INTO transactions (date, type, amount, category_id, account_id, counterparty, description,
-      created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`, [...r, `${r[0]} 12:00:00`]);
+    await d.run(`INSERT INTO transactions (date, type, amount, category_id, account_id, counterparty, spent_by, description,
+      created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`, [...r, `${r[0]} 12:00:00`]);
   }
   decoyDb = d;
   return d;
@@ -280,6 +280,7 @@ async function validateTx(body, user) {
   return {
     date, type: body.type, amount, category_id: categoryId, account_id: accountId,
     counterparty: cleanText(body.counterparty, 200),
+    spent_by: body.type === 'expense' ? cleanText(body.spent_by, 200) : '',
     description: cleanText(body.description, 1000),
   };
 }
@@ -298,7 +299,7 @@ function txFilters(q, limited = false) {
   if (search) {
     params.push(`%${search}%`);
     const n = '$' + params.length;
-    where.push(limited ? `t.counterparty ${db.like} ${n}` : `(t.description ${db.like} ${n} OR t.counterparty ${db.like} ${n})`);
+    where.push(limited ? `(t.counterparty ${db.like} ${n} OR t.spent_by ${db.like} ${n})` : `(t.description ${db.like} ${n} OR t.counterparty ${db.like} ${n} OR t.spent_by ${db.like} ${n})`);
   }
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', params };
 }
@@ -307,7 +308,7 @@ function listTx(q, limited = false) {
   return db.all(`
     SELECT t.id, t.date, t.type, t.amount, t.category_id, c.name AS category,
            t.account_id, a.name AS account, a.kind AS account_kind,
-           t.counterparty, t.description, t.created_at, t.updated_at,
+           t.counterparty, t.spent_by, t.description, t.created_at, t.updated_at,
            cu.name AS created_by_name, uu.name AS updated_by_name
     FROM transactions t
     JOIN categories c ON c.id = t.category_id
@@ -319,8 +320,12 @@ function listTx(q, limited = false) {
 async function txLabel(t) {
   const cat = (await db.get('SELECT name FROM categories WHERE id = $1', [t.category_id]))?.name ?? '?';
   const acc = t.account_id ? (await db.get('SELECT name FROM accounts WHERE id = $1', [t.account_id]))?.name : null;
-  return `${t.type === 'income' ? 'Надходження' : 'Витрата'} ${hrn(t.amount)}, ${t.date}, «${cat}»`
-    + (acc ? `, ${t.type === 'income' ? 'на' : 'з'} «${acc}»` : '')
+  const income = t.type === 'income';
+  return `${income ? 'Надходження' : 'Витрата'} ${hrn(t.amount)}, ${t.date}, «${cat}»`
+    + (income && t.counterparty ? `, від кого: ${t.counterparty}` : '')
+    + (!income && t.spent_by ? `, витратив: ${t.spent_by}` : '')
+    + (!income && t.counterparty ? `, кому: ${t.counterparty}` : '')
+    + (acc ? `, ${income ? 'на' : 'з'} «${acc}»` : '')
     + (t.description ? `, ${t.description}` : '');
 }
 function csvCell(v) {
@@ -682,9 +687,9 @@ async function authedApi(req, res, url, user) {
     const t = await validateTx(await readJson(req), user);
     const now = nowText();
     const r = await db.get(`INSERT INTO transactions
-      (date, type, amount, category_id, account_id, counterparty, description, created_by, updated_by, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $9) RETURNING id`,
-      [t.date, t.type, t.amount, t.category_id, t.account_id, t.counterparty, t.description, user.id, now]);
+      (date, type, amount, category_id, account_id, counterparty, spent_by, description, created_by, updated_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $10) RETURNING id`,
+      [t.date, t.type, t.amount, t.category_id, t.account_id, t.counterparty, t.spent_by, t.description, user.id, now]);
     await audit(user, 'Нова операція', await txLabel(t));
     return send(res, 201, { id: r.id });
   }
@@ -698,8 +703,8 @@ async function authedApi(req, res, url, user) {
     if (m === 'PUT') {
       const t = await validateTx(await readJson(req), user);
       await db.run(`UPDATE transactions SET date = $1, type = $2, amount = $3, category_id = $4, counterparty = $5,
-        description = $6, updated_by = $7, updated_at = $8, account_id = $9 WHERE id = $10`,
-        [t.date, t.type, t.amount, t.category_id, t.counterparty, t.description, user.id, nowText(), t.account_id, id]);
+        description = $6, updated_by = $7, updated_at = $8, account_id = $9, spent_by = $10 WHERE id = $11`,
+        [t.date, t.type, t.amount, t.category_id, t.counterparty, t.description, user.id, nowText(), t.account_id, t.spent_by, id]);
       await audit(user, 'Зміна операції', `було: ${await txLabel(old)}; стало: ${await txLabel(t)}`);
       return send(res, 200, { ok: true });
     }
@@ -721,15 +726,15 @@ async function authedApi(req, res, url, user) {
   if (p === '/api/export.csv' && m === 'GET') {
     const full = seesAccounts(user);
     const rows = (await listTx(url.searchParams, !full)).reverse();
-    const head = ['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Опис', 'Вніс'];
-    const drop = (a) => { a.splice(7, 1); a.splice(3, 1); }; // без опису й назви рахунку
+    const head = ['Дата', 'Тип', 'Категорія', 'Рахунок', 'Готівка / безготівка', 'Сума, грн', 'Від кого / кому', 'Хто витратив', 'Опис', 'Вніс'];
+    const drop = (a) => { a.splice(8, 1); a.splice(3, 1); }; // без опису й назви рахунку
     if (!full) drop(head);
     const lines = [head.join(';')];
     for (const r of rows) {
       const cells = [
         r.date, r.type === 'income' ? 'Надходження' : 'Витрата', r.category,
         r.account ?? '', ACCOUNT_KINDS[r.account_kind] ?? '',
-        (r.amount / 100).toFixed(2).replace('.', ','), r.counterparty, r.description, r.created_by_name,
+        (r.amount / 100).toFixed(2).replace('.', ','), r.counterparty, r.spent_by, r.description, r.created_by_name,
       ];
       if (!full) drop(cells);
       lines.push(cells.map(csvCell).join(';'));

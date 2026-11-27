@@ -73,7 +73,7 @@ async function showApp(session) {
   $$('[data-editor]').forEach((n) => { n.hidden = !canEdit(); });
   $$('[data-accounts]').forEach((n) => { n.hidden = !seesAccounts(); });
   $$('[data-viewer]').forEach((n) => { n.hidden = seesAccounts(); });
-  $('#f-q').placeholder = seesAccounts() ? 'опис або контрагент' : 'контрагент';
+  $('#f-q').placeholder = seesAccounts() ? 'опис, від кого або хто витратив' : 'від кого або хто витратив';
   switchTab('summary');
   resetTxForm();
   resetDebtForm();
@@ -250,6 +250,7 @@ const txForm = $('#tx-form');
 function updateCpLabel() {
   const income = txForm.type.value === 'income';
   $('#cp-label').textContent = income ? 'Від кого (джерело)' : 'Кому / постачальник';
+  $('#spent-by-field').hidden = income;
   $('#acc-label').textContent = income ? 'На рахунок (куди надійшло)' : 'З рахунку (звідки витрачено)';
 }
 txForm.querySelectorAll('[name=type]').forEach((r) => r.addEventListener('change', updateCpLabel));
@@ -274,7 +275,7 @@ txForm.addEventListener('submit', async (e) => {
   const body = {
     type: txForm.type.value, date: txForm.date.value, amount: txForm.amount.value,
     category_id: txForm.category_id.value, account_id: txForm.account_id.value, counterparty: txForm.counterparty.value,
-    description: txForm.description.value,
+    spent_by: txForm.spent_by.value, description: txForm.description.value,
   };
   try {
     if (editingId) await api('/api/transactions/' + editingId, { method: 'PUT', body });
@@ -305,6 +306,7 @@ function editTx(t) {
   }
   txForm.account_id.value = t.account_id ?? '';
   txForm.counterparty.value = t.counterparty;
+  txForm.spent_by.value = t.spent_by || '';
   txForm.description.value = t.description;
   $('#tx-form-title').textContent = 'Редагування операції';
   $('#tx-submit').textContent = 'Зберегти';
@@ -337,6 +339,13 @@ function authorCell(t) {
     ? `Змінив: ${t.updated_by_name}, ${dateTimeFmt(t.updated_at)}` : `Внесено ${dateTimeFmt(t.created_at)}`;
   return el('td', { class: 'muted small', title }, who);
 }
+// Для надходження — від кого, для витрати — хто витратив (і кому, дрібніше).
+function personCell(t) {
+  if (t.type === 'income') return el('td', {}, t.counterparty ? `Від: ${t.counterparty}` : '');
+  return el('td', {},
+    t.spent_by ? `Витратив: ${t.spent_by}` : el('span', { class: 'muted' }, 'хто витратив — не вказано'),
+    t.counterparty ? el('div', { class: 'muted small' }, `кому: ${t.counterparty}`) : '');
+}
 async function loadTransactions() {
   const rows = await api('/api/transactions?' + filterQuery());
   let inc = 0; let exp = 0;
@@ -348,7 +357,7 @@ async function loadTransactions() {
     el('td', { class: 'nowrap' }, dateFmt(t.date)),
     el('td', {}, t.category),
     seesAccounts() ? el('td', { class: t.account ? '' : 'muted' }, t.account ? `${t.account} · ${KINDS[t.account_kind].toLowerCase()}` : 'не вказано') : '',
-    el('td', {}, t.counterparty),
+    personCell(t),
     seesAccounts() ? el('td', { class: 'desc' }, t.description)
       : el('td', { class: t.account_kind ? '' : 'muted' }, t.account_kind ? KINDS[t.account_kind] : 'не вказано'),
     el('td', { class: 'num nowrap ' + t.type }, (t.type === 'income' ? '+' : '−') + money(t.amount)),

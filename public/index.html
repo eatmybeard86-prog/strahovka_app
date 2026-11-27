@@ -123,6 +123,7 @@
             <label>Сума, грн <input type="text" name="amount" inputmode="decimal" placeholder="0,00" required></label>
             <label>Категорія <select name="category_id" required></select></label>
             <label><span id="acc-label">З рахунку</span> <select name="account_id" required></select></label>
+            <label id="spent-by-field">Хто витратив <input type="text" name="spent_by" maxlength="200" placeholder="Прізвище"></label>
             <label><span id="cp-label">Кому / постачальник</span> <input type="text" name="counterparty" maxlength="200"></label>
           </div>
           <label>Опис <input type="text" name="description" maxlength="1000" placeholder="Що саме, № накладної тощо"></label>
@@ -145,14 +146,14 @@
           </label>
           <label>Категорія <select id="f-cat"></select></label>
           <label data-accounts>Рахунок <select id="f-acc"></select></label>
-          <label class="grow">Пошук <input type="search" id="f-q" placeholder="опис або контрагент"></label>
+          <label class="grow">Пошук <input type="search" id="f-q" placeholder="опис, від кого або хто витратив"></label>
           <button id="export" class="ghost">Експорт у CSV</button>
         </div>
         <p class="muted" id="tx-totals"></p>
         <div class="card table-wrap">
           <table class="data">
             <thead><tr>
-              <th>Дата</th><th>Категорія</th><th data-accounts>Рахунок</th><th>Від кого / кому</th><th data-accounts>Опис</th><th data-viewer hidden>Готівка / безготівка</th>
+              <th>Дата</th><th>Категорія</th><th data-accounts>Рахунок</th><th>Від кого / хто витратив</th><th data-accounts>Опис</th><th data-viewer hidden>Готівка / безготівка</th>
               <th class="num">Сума</th><th>Вніс</th><th></th>
             </tr></thead>
             <tbody id="tx-body"></tbody>
