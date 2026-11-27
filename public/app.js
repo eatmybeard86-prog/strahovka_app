@@ -705,6 +705,7 @@ async function toggleUser(u) {
 async function loadUsers() {
   if (!isAdmin()) return;
   if (!editingUserId) resetUserForm();
+  loadSos();
   users = await api('/api/users');
   const catName = (id) => categories.find((c) => c.id === id)?.name ?? '?';
   $('#user-body').replaceChildren(...users.map((u) => el('tr', { class: u.active ? '' : 'archived' },
@@ -719,6 +720,38 @@ async function loadUsers() {
         u.active ? 'Вимкнути' : 'Увімкнути')),
   )));
 }
+// ---------- SOS-пароль ----------
+const sosForm = $('#sos-form');
+async function loadSos() {
+  sosForm.hidden = true;
+  const res = await fetch('/api/sos', { credentials: 'same-origin' }).catch(() => null);
+  if (!res || !res.ok) return;
+  const { set } = await res.json();
+  sosForm.reset();
+  $('#sos-error').textContent = '';
+  $('#sos-state').textContent = set ? 'Зараз SOS-пароль задано.' : 'Зараз SOS-пароль не задано.';
+  sosForm.password.required = true;
+  $('#sos-off').hidden = !set;
+  sosForm.hidden = false;
+}
+sosForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#sos-error').textContent = '';
+  try {
+    await api('/api/sos', { method: 'PUT', body: { password: sosForm.password.value, current: sosForm.current.value } });
+    await loadSos();
+    alert('SOS-пароль збережено.');
+  } catch (err) { $('#sos-error').textContent = err.message; }
+});
+$('#sos-off').addEventListener('click', async () => {
+  $('#sos-error').textContent = '';
+  if (!sosForm.current.value) { $('#sos-error').textContent = 'Введіть свій справжній пароль для підтвердження'; return; }
+  try {
+    await api('/api/sos', { method: 'DELETE', body: { current: sosForm.current.value } });
+    await loadSos();
+  } catch (err) { $('#sos-error').textContent = err.message; }
+});
+
 async function refreshMe() {
   const s = await api('/api/session');
   me = s.user;

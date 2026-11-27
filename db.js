@@ -1,4 +1,5 @@
 'use strict';
+// settings — налаштування (зокрема хеш SOS-пароля), sos_sessions — сесії входу з SOS-паролем.
 // Особисті борги (debts) і особисті витрати (personal_expenses) — окремі таблиці,
 // вони не впливають на загальний баланс роти. Міграція лише додає нові таблиці (CREATE IF NOT EXISTS).
 // Сховище даних: PostgreSQL, якщо задано DATABASE_URL (наприклад, безкоштовна база Neon),
@@ -86,6 +87,15 @@ const SQLITE_SCHEMA = `
     updated_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sos_sessions (
+    token_hash TEXT PRIMARY KEY,
+    login TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_cat ON transactions(category_id);
@@ -175,6 +185,15 @@ const PG_SCHEMA = `
     created_at TEXT NOT NULL DEFAULT ${PG_NOW},
     updated_at TEXT NOT NULL DEFAULT ${PG_NOW}
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sos_sessions (
+    token_hash TEXT PRIMARY KEY,
+    login TEXT NOT NULL,
+    expires_at BIGINT NOT NULL
+  );
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_cat ON transactions(category_id);
   CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
@@ -182,10 +201,10 @@ const PG_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_pexp_date ON personal_expenses(date);
 `;
 
-function openSqlite(dataDir) {
+function openSqlite(dataDir, memory = false) {
   const { DatabaseSync } = require('node:sqlite');
-  fs.mkdirSync(dataDir, { recursive: true });
-  const db = new DatabaseSync(path.join(dataDir, 'oblik.db'));
+  if (!memory) fs.mkdirSync(dataDir, { recursive: true });
+  const db = new DatabaseSync(memory ? ':memory:' : path.join(dataDir, 'oblik.db'));
   db.exec(SQLITE_SCHEMA);
   // Міграція з першої версії: хто вніс і хто останнім змінив операцію.
   const cols = db.prepare('PRAGMA table_info(transactions)').all().map((c) => c.name);
@@ -231,7 +250,9 @@ async function openPostgres(url) {
   };
 }
 
-async function openDatabase({ databaseUrl, dataDir }) {
+// memory: окрема тимчасова база в пам'яті (для SOS-входу: справжні дані туди не потрапляють).
+async function openDatabase({ databaseUrl, dataDir, memory = false }) {
+  if (memory) return openSqlite('', true);
   return databaseUrl ? openPostgres(databaseUrl) : openSqlite(dataDir);
 }
 
