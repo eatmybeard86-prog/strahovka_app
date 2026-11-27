@@ -260,6 +260,77 @@ async function nameTaken(name, exceptId = 0, table = 'categories') {
     .some((c) => c.id !== exceptId && c.name.toLocaleLowerCase('uk') === key);
 }
 
+// ---------- Особисті борги та витрати ----------
+// Окремо від коштів роти: не потрапляють у звіт, залишки категорій і рахунків.
+// Люди вказуються іменами (не обов'язково користувачі застосунку).
+const personName = (v) => cleanText(v, 100).replace(/\s+/g, ' ');
+const personKey = (n) => n.toLocaleLowerCase('uk');
+function validateDebt(body) {
+  if (!isDate(body.date)) throw new HttpError(400, 'Вкажіть коректну дату');
+  const debtor = personName(body.debtor);
+  const creditor = personName(body.creditor);
+  if (!debtor) throw new HttpError(400, 'Вкажіть, хто винен');
+  if (!creditor) throw new HttpError(400, 'Вкажіть, кому винен');
+  if (personKey(debtor) === personKey(creditor)) throw new HttpError(400, 'Боржник і кредитор мають бути різними людьми');
+  const amount = parseAmount(body.amount);
+  if (amount === null) throw new HttpError(400, 'Вкажіть суму більше нуля (до 2 знаків після коми)');
+  return { date: body.date, debtor, creditor, amount, note: cleanText(body.note, 1000) };
+}
+function validatePersonalExpense(body) {
+  if (!isDate(body.date)) throw new HttpError(400, 'Вкажіть коректну дату');
+  const person = personName(body.person);
+  if (!person) throw new HttpError(400, 'Вкажіть, чия це витрата');
+  const amount = parseAmount(body.amount);
+  if (amount === null) throw new HttpError(400, 'Вкажіть суму більше нуля (до 2 знаків після коми)');
+  return { date: body.date, person, amount, note: cleanText(body.note, 1000) };
+}
+const debtLabel = (d) => `${d.debtor} винен ${d.creditor} ${hrn(d.amount)}, ${d.date}${d.note ? `, ${d.note}` : ''}`;
+const pexpLabel = (e) => `${e.person}: ${hrn(e.amount)}, ${e.date}${e.note ? `, ${e.note}` : ''}`;
+
+// Підсумок неповернених боргів: хто кому винен (взаємні борги згортаються) і сальдо кожної людини.
+function debtBalances(debts) {
+  const names = new Map(); // ключ → як написано вперше
+  const nameOf = (n) => { const k = personKey(n); if (!names.has(k)) names.set(k, n); return k; };
+  const pairs = new Map();
+  const people = new Map();
+  const person = (k) => { if (!people.has(k)) people.set(k, { owes: 0, owed: 0 }); return people.get(k); };
+  for (const d of debts) {
+    if (d.repaid_at) continue;
+    const a = nameOf(d.debtor); const b = nameOf(d.creditor);
+    person(a).owes += d.amount; person(b).owed += d.amount;
+    const [x, y, sign] = a < b ? [a, b, 1] : [b, a, -1];
+    pairs.set(x + '\u0000' + y, (pairs.get(x + '\u0000' + y) || 0) + sign * d.amount);
+  }
+  const who = [];
+  for (const [key, net] of pairs) {
+    if (!net) continue;
+    const [x, y] = key.split('\u0000');
+    who.push(net > 0 ? { debtor: names.get(x), creditor: names.get(y), amount: net }
+      : { debtor: names.get(y), creditor: names.get(x), amount: -net });
+  }
+  who.sort((p, q) => q.amount - p.amount);
+  const balances = [...people].map(([k, v]) => ({ name: names.get(k), owes: v.owes, owed: v.owed, net: v.owed - v.owes }))
+    .sort((p, q) => q.net - p.net || p.name.localeCompare(q.name, 'uk'));
+  return { pairs: who, balances, total: who.reduce((s, p) => s + p.amount, 0) };
+}
+function personalFilters(q) {
+  const where = []; const params = [];
+  const add = (cond, v) => { params.push(v); where.push(cond.replace('?', '$' + params.length)); };
+  if (isDate(q.get('from'))) add('d.date >= ?', q.get('from'));
+  if (isDate(q.get('to'))) add('d.date <= ?', q.get('to'));
+  return { where, params };
+}
+// Пошук за ім'ям без урахування регістру й для кирилиці (SQLite LIKE так не вміє).
+function byPerson(rows, q, cols) {
+  const who = personKey(personName(q.get('person')));
+  return who ? rows.filter((r) => cols.some((c) => personKey(r[c]).includes(who))) : rows;
+}
+const PERSONAL_SELECT = (table) => `
+  SELECT d.*, cu.name AS created_by_name, uu.name AS updated_by_name
+  FROM ${table} d LEFT JOIN users cu ON cu.id = d.created_by LEFT JOIN users uu ON uu.id = d.updated_by`;
+// Глядач бачить імена й суми, але не примітки (як і опис операцій роти).
+const hideNotes = (user, rows) => (seesAccounts(user) ? rows : rows.map(({ note, ...r }) => r));
+
 // ---------- Користувачі ----------
 const LOGIN_RE = /^[a-z0-9._-]{3,32}$/;
 function validatePassword(pw) {
@@ -536,6 +607,92 @@ async function api(req, res, url) {
       'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': `attachment; filename="${name}"`,
     });
+  }
+
+  // Особисті борги: переглядають усі, вносять і змінюють — адміністратор і редактор.
+  if (p === '/api/debts' && m === 'GET') {
+    const q = url.searchParams;
+    const f = personalFilters(q);
+    if (q.get('status') === 'open') f.where.push('d.repaid_at IS NULL');
+    if (q.get('status') === 'repaid') f.where.push('d.repaid_at IS NOT NULL');
+    const rows = await db.all(`${PERSONAL_SELECT('debts')} ${f.where.length ? 'WHERE ' + f.where.join(' AND ') : ''}
+      ORDER BY (CASE WHEN d.repaid_at IS NULL THEN 0 ELSE 1 END), d.date DESC, d.id DESC LIMIT 5000`, f.params);
+    return send(res, 200, hideNotes(user, byPerson(rows, q, ['debtor', 'creditor'])));
+  }
+  if (p === '/api/debts/summary' && m === 'GET') {
+    return send(res, 200, debtBalances(await db.all('SELECT debtor, creditor, amount, repaid_at FROM debts')));
+  }
+  if (p === '/api/debts' && m === 'POST') {
+    requireRole(user, 'admin', 'editor');
+    const d = validateDebt(await readJson(req));
+    const now = nowText();
+    const r = await db.get(`INSERT INTO debts (date, debtor, creditor, amount, note, created_by, updated_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $7) RETURNING id`, [d.date, d.debtor, d.creditor, d.amount, d.note, user.id, now]);
+    await audit(user, 'Новий особистий борг', debtLabel(d));
+    return send(res, 201, { id: r.id });
+  }
+  mm = p.match(/^\/api\/debts\/(\d+)(\/repaid)?$/);
+  if (mm) {
+    requireRole(user, 'admin', 'editor');
+    const id = toId(mm[1]);
+    const old = await db.get('SELECT * FROM debts WHERE id = $1', [id]);
+    if (!old) throw new HttpError(404, 'Борг не знайдено');
+    if (mm[2] && m === 'POST') {
+      const repaid = (await readJson(req)).repaid !== false;
+      const now = nowText();
+      await db.run('UPDATE debts SET repaid_at = $1, repaid_by = $2, updated_by = $3, updated_at = $4 WHERE id = $5',
+        [repaid ? now : null, repaid ? user.id : null, user.id, now, id]);
+      await audit(user, repaid ? 'Борг повернуто' : 'Борг знову активний', debtLabel(old));
+      return send(res, 200, { ok: true });
+    }
+    if (!mm[2] && m === 'PUT') {
+      const d = validateDebt(await readJson(req));
+      await db.run(`UPDATE debts SET date = $1, debtor = $2, creditor = $3, amount = $4, note = $5, updated_by = $6, updated_at = $7
+        WHERE id = $8`, [d.date, d.debtor, d.creditor, d.amount, d.note, user.id, nowText(), id]);
+      await audit(user, 'Зміна особистого боргу', `було: ${debtLabel(old)}; стало: ${debtLabel(d)}`);
+      return send(res, 200, { ok: true });
+    }
+    if (!mm[2] && m === 'DELETE') {
+      await db.run('DELETE FROM debts WHERE id = $1', [id]);
+      await audit(user, 'Видалення особистого боргу', debtLabel(old));
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // Особисті витрати: окремо від коштів роти.
+  if (p === '/api/personal-expenses' && m === 'GET') {
+    const f = personalFilters(url.searchParams);
+    const rows = await db.all(`${PERSONAL_SELECT('personal_expenses')} ${f.where.length ? 'WHERE ' + f.where.join(' AND ') : ''}
+      ORDER BY d.date DESC, d.id DESC LIMIT 5000`, f.params);
+    return send(res, 200, hideNotes(user, byPerson(rows, url.searchParams, ['person'])));
+  }
+  if (p === '/api/personal-expenses' && m === 'POST') {
+    requireRole(user, 'admin', 'editor');
+    const e = validatePersonalExpense(await readJson(req));
+    const now = nowText();
+    const r = await db.get(`INSERT INTO personal_expenses (date, person, amount, note, created_by, updated_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $5, $6, $6) RETURNING id`, [e.date, e.person, e.amount, e.note, user.id, now]);
+    await audit(user, 'Нова особиста витрата', pexpLabel(e));
+    return send(res, 201, { id: r.id });
+  }
+  mm = p.match(/^\/api\/personal-expenses\/(\d+)$/);
+  if (mm) {
+    requireRole(user, 'admin', 'editor');
+    const id = toId(mm[1]);
+    const old = await db.get('SELECT * FROM personal_expenses WHERE id = $1', [id]);
+    if (!old) throw new HttpError(404, 'Витрату не знайдено');
+    if (m === 'PUT') {
+      const e = validatePersonalExpense(await readJson(req));
+      await db.run(`UPDATE personal_expenses SET date = $1, person = $2, amount = $3, note = $4, updated_by = $5, updated_at = $6
+        WHERE id = $7`, [e.date, e.person, e.amount, e.note, user.id, nowText(), id]);
+      await audit(user, 'Зміна особистої витрати', `було: ${pexpLabel(old)}; стало: ${pexpLabel(e)}`);
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'DELETE') {
+      await db.run('DELETE FROM personal_expenses WHERE id = $1', [id]);
+      await audit(user, 'Видалення особистої витрати', pexpLabel(old));
+      return send(res, 200, { ok: true });
+    }
   }
 
   // Користувачі та журнал — лише для адміністратора.

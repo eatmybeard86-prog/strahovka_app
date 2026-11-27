@@ -186,3 +186,10 @@ label.check input { width: auto; min-height: 0; }
 .section-title { margin: 8px 0 -4px; font-size: 1.05rem; }
 .kpi-note { font-size: .85rem; color: var(--muted); }
 table.data tfoot tr.sub th { font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--border); }
+
+/* Особисте: дві таблиці поруч на широкому екрані */
+.two-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; }
+.two-col > div { min-width: 0; }
+@media (min-width: 900px) { .two-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.badge-open { color: var(--expense); }
+.badge-repaid { color: var(--income); }

@@ -39,6 +39,7 @@
       <nav class="tabs" role="tablist">
         <button data-tab="summary" class="active">Звіт</button>
         <button data-tab="transactions">Операції</button>
+        <button data-tab="personal">Особисте</button>
         <button data-tab="categories" data-admin>Категорії</button>
         <button data-tab="accounts" data-admin>Рахунки</button>
         <button data-tab="users" data-admin>Користувачі</button>
@@ -155,6 +156,98 @@
             <tbody id="tx-body"></tbody>
           </table>
         </div>
+      </section>
+
+      <!-- Особисте: борги та витрати окремо від коштів роти -->
+      <section id="tab-personal" class="tab" hidden>
+        <p class="muted">Особисті борги й витрати ведуться окремо: вони не впливають на звіт, залишки категорій і рахунків роти.</p>
+        <div class="kpis" id="debt-kpis"></div>
+        <div class="two-col">
+          <div>
+            <h2 class="section-title">Хто кому винен</h2>
+            <div class="card table-wrap">
+              <table class="data">
+                <thead><tr><th>Хто винен</th><th>Кому</th><th class="num">Сума</th></tr></thead>
+                <tbody id="debt-pairs"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h2 class="section-title">Сальдо по людях</h2>
+            <div class="card table-wrap">
+              <table class="data">
+                <thead><tr><th>Хто</th><th class="num">Йому винні</th><th class="num">Він винен</th><th class="num">Сальдо</th></tr></thead>
+                <tbody id="debt-balances"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <p class="muted small">Враховуються лише неповернені борги. Зустрічні борги двох людей згортаються в один. Сальдо «+» означає, що людині винні більше, ніж вона сама.</p>
+
+        <h2 class="section-title">Борги</h2>
+        <form id="debt-form" class="card tx-form" data-editor>
+          <h2 id="debt-form-title">Новий борг</h2>
+          <div class="grid">
+            <label>Дата <input type="date" name="date" required></label>
+            <label>Хто винен (боржник) <input type="text" name="debtor" maxlength="100" list="people-list" autocomplete="off" required></label>
+            <label>Кому винен (кредитор) <input type="text" name="creditor" maxlength="100" list="people-list" autocomplete="off" required></label>
+            <label>Сума, грн <input type="text" name="amount" inputmode="decimal" placeholder="0,00" required></label>
+          </div>
+          <label>Примітка <input type="text" name="note" maxlength="1000" placeholder="За що, до якого терміну тощо"></label>
+          <div class="actions">
+            <button type="submit" class="primary" id="debt-submit">Додати</button>
+            <button type="button" class="ghost" id="debt-cancel" hidden>Скасувати редагування</button>
+          </div>
+          <p id="debt-error" class="error" role="alert"></p>
+        </form>
+        <div class="toolbar">
+          <label>Стан
+            <select id="d-status">
+              <option value="open">Неповернені</option>
+              <option value="repaid">Повернені</option>
+              <option value="">Усі</option>
+            </select>
+          </label>
+          <label class="grow">Людина <input type="search" id="d-person" placeholder="ім'я боржника або кредитора"></label>
+        </div>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Дата</th><th>Хто винен</th><th>Кому</th><th data-accounts>Примітка</th>
+              <th class="num">Сума</th><th>Стан</th><th>Вніс</th><th></th>
+            </tr></thead>
+            <tbody id="debt-body"></tbody>
+          </table>
+        </div>
+
+        <h2 class="section-title">Особисті витрати</h2>
+        <form id="pexp-form" class="card tx-form" data-editor>
+          <h2 id="pexp-form-title">Нова особиста витрата</h2>
+          <div class="grid">
+            <label>Дата <input type="date" name="date" required></label>
+            <label>Чия витрата <input type="text" name="person" maxlength="100" list="people-list" autocomplete="off" required></label>
+            <label>Сума, грн <input type="text" name="amount" inputmode="decimal" placeholder="0,00" required></label>
+          </div>
+          <label>Примітка <input type="text" name="note" maxlength="1000" placeholder="Що саме"></label>
+          <div class="actions">
+            <button type="submit" class="primary" id="pexp-submit">Додати</button>
+            <button type="button" class="ghost" id="pexp-cancel" hidden>Скасувати редагування</button>
+          </div>
+          <p id="pexp-error" class="error" role="alert"></p>
+        </form>
+        <div class="toolbar">
+          <label>З <input type="date" id="pe-from"></label>
+          <label>По <input type="date" id="pe-to"></label>
+          <label class="grow">Людина <input type="search" id="pe-person" placeholder="ім'я"></label>
+        </div>
+        <p class="muted" id="pexp-totals"></p>
+        <div class="card table-wrap">
+          <table class="data">
+            <thead><tr><th>Дата</th><th>Чия</th><th data-accounts>Примітка</th><th class="num">Сума</th><th>Вніс</th><th></th></tr></thead>
+            <tbody id="pexp-body"></tbody>
+          </table>
+        </div>
+        <datalist id="people-list"></datalist>
       </section>
 
       <!-- Категорії -->

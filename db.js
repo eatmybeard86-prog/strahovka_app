@@ -1,4 +1,6 @@
 'use strict';
+// Особисті борги (debts) і особисті витрати (personal_expenses) — окремі таблиці,
+// вони не впливають на загальний баланс роти. Міграція лише додає нові таблиці (CREATE IF NOT EXISTS).
 // Сховище даних: PostgreSQL, якщо задано DATABASE_URL (наприклад, безкоштовна база Neon),
 // інакше вбудований SQLite у файлі DATA_DIR/oblik.db.
 // SQL у застосунку пишеться з плейсхолдерами $1, $2… і працює з обома базами.
@@ -60,9 +62,36 @@ const SQLITE_SCHEMA = `
     action TEXT NOT NULL,
     details TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS debts (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    debtor TEXT NOT NULL,
+    creditor TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    repaid_at TEXT,
+    repaid_by INTEGER REFERENCES users(id),
+    created_by INTEGER REFERENCES users(id),
+    updated_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS personal_expenses (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    person TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    updated_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_cat ON transactions(category_id);
   CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+  CREATE INDEX IF NOT EXISTS idx_debts_date ON debts(date);
+  CREATE INDEX IF NOT EXISTS idx_pexp_date ON personal_expenses(date);
 `;
 
 // Час зберігається як текст «YYYY-MM-DD HH:MM:SS» в UTC в обох базах.
@@ -121,9 +150,36 @@ const PG_SCHEMA = `
     action TEXT NOT NULL,
     details TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS debts (
+    id SERIAL PRIMARY KEY,
+    date TEXT NOT NULL,
+    debtor TEXT NOT NULL,
+    creditor TEXT NOT NULL,
+    amount BIGINT NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    repaid_at TEXT,
+    repaid_by INTEGER REFERENCES users(id),
+    created_by INTEGER REFERENCES users(id),
+    updated_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT ${PG_NOW},
+    updated_at TEXT NOT NULL DEFAULT ${PG_NOW}
+  );
+  CREATE TABLE IF NOT EXISTS personal_expenses (
+    id SERIAL PRIMARY KEY,
+    date TEXT NOT NULL,
+    person TEXT NOT NULL,
+    amount BIGINT NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    updated_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT ${PG_NOW},
+    updated_at TEXT NOT NULL DEFAULT ${PG_NOW}
+  );
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_cat ON transactions(category_id);
   CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+  CREATE INDEX IF NOT EXISTS idx_debts_date ON debts(date);
+  CREATE INDEX IF NOT EXISTS idx_pexp_date ON personal_expenses(date);
 `;
 
 function openSqlite(dataDir) {
