@@ -282,7 +282,9 @@ test('SOS-пароль відкриває приманку без доступу
   assert.equal(s.user.role, 'admin');
   assert.equal(s.user.login, 'admin');
   const fake = (await intruder('GET', '/api/transactions')).data;
-  assert.ok(fake.length > 10, 'приманка не порожня');
+  assert.ok(fake.length > 0, 'приманка не порожня');
+  assert.ok(fake.every((t) => t.amount === 100000 || t.amount === 500000));
+  assert.equal((await intruder('GET', '/api/summary?from=2000-01-01&to=2100-01-01')).data.total.closing, 0);
   const realIds = new Set(real.map((t) => t.description));
   assert.ok(!fake.some((t) => realIds.has(t.description) && t.description.startsWith('Тест')));
   assert.notDeepEqual((await intruder('GET', '/api/summary')).data.total, realSummary.total);
