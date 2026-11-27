@@ -69,11 +69,15 @@ async function showApp(session) {
   $('#me-role').textContent = roles[me.role];
   $$('[data-admin]').forEach((n) => { n.hidden = !isAdmin(); });
   $('#tx-form').hidden = !canEdit();
+  $$('[data-editor]').forEach((n) => { n.hidden = !canEdit(); });
   $$('[data-accounts]').forEach((n) => { n.hidden = !seesAccounts(); });
   $$('[data-viewer]').forEach((n) => { n.hidden = seesAccounts(); });
   $('#f-q').placeholder = seesAccounts() ? 'опис або контрагент' : 'контрагент';
   switchTab('summary');
   resetTxForm();
+  resetDebtForm();
+  resetPexpForm();
+  knownPeople = new Set();
   await Promise.all([loadCategories(), seesAccounts() ? loadAccounts() : null]);
   await Promise.all([loadSummary(), loadTransactions()]);
 }
@@ -118,6 +122,7 @@ function switchTab(name) {
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
   if (name === 'accounts') loadAccounts();
+  if (name === 'personal' && me) loadPersonal();
 }
 $$('.tabs button').forEach((btn) => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
@@ -357,6 +362,199 @@ let searchTimer;
 ['#f-from', '#f-to', '#f-type', '#f-cat', '#f-acc'].forEach((s) => $(s).addEventListener('change', loadTransactions));
 $('#f-q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadTransactions, 300); });
 $('#export').addEventListener('click', () => { window.location.href = '/api/export.csv?' + filterQuery(); });
+
+// ---------- Особисте: борги та витрати (окремо від коштів роти) ----------
+const debtForm = $('#debt-form');
+const pexpForm = $('#pexp-form');
+let editingDebtId = null;
+let editingPexpId = null;
+const amountText = (kop) => (kop / 100).toFixed(2).replace('.', ',');
+
+async function loadPersonal() {
+  await Promise.all([loadDebtSummary(), loadDebts(), loadPersonalExpenses()]);
+}
+let knownPeople = new Set();
+function addPeople(...names) {
+  for (const n of names) if (n) knownPeople.add(n);
+  $('#people-list').replaceChildren(...[...knownPeople].sort((a, b) => a.localeCompare(b, 'uk')).map((n) => el('option', { value: n })));
+}
+
+async function loadDebtSummary() {
+  const s = await api('/api/debts/summary');
+  const kpi = (label, value, cls = '') => el('div', { class: 'card kpi ' + cls }, el('span', { class: 'muted' }, label), el('strong', {}, value));
+  $('#debt-kpis').replaceChildren(
+    kpi('Неповернених боргів разом', money(s.total), 'expense'),
+    kpi('Пар «хто кому»', String(s.pairs.length)),
+  );
+  $('#debt-pairs').replaceChildren(...(s.pairs.length ? s.pairs.map((p) => el('tr', {},
+    el('td', {}, p.debtor), el('td', {}, p.creditor), el('td', { class: 'num strong' }, money(p.amount)),
+  )) : [el('tr', {}, el('td', { colspan: 3, class: 'muted' }, 'Ніхто нікому не винен.'))]));
+  $('#debt-balances').replaceChildren(...(s.balances.length ? s.balances.map((b) => el('tr', {},
+    el('td', {}, b.name),
+    el('td', { class: 'num income' }, money(b.owed)),
+    el('td', { class: 'num expense' }, money(b.owes)),
+    el('td', { class: 'num strong' }, el('span', { class: b.net < 0 ? 'negative' : '' }, (b.net > 0 ? '+' : '') + money(b.net))),
+  )) : [el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Немає неповернених боргів.'))]));
+  addPeople(...s.balances.map((b) => b.name));
+}
+
+function debtQuery() {
+  const p = new URLSearchParams();
+  if ($('#d-status').value) p.set('status', $('#d-status').value);
+  if ($('#d-person').value.trim()) p.set('person', $('#d-person').value.trim());
+  return p.toString();
+}
+async function loadDebts() {
+  const rows = await api('/api/debts?' + debtQuery());
+  addPeople(...rows.flatMap((d) => [d.debtor, d.creditor]));
+  $('#debt-body').replaceChildren(...(rows.length ? rows.map((d) => el('tr', { class: d.repaid_at ? 'archived' : '' },
+    el('td', { class: 'nowrap' }, dateFmt(d.date)),
+    el('td', {}, d.debtor),
+    el('td', {}, d.creditor),
+    seesAccounts() ? el('td', { class: 'desc' }, d.note) : '',
+    el('td', { class: 'num nowrap strong' }, money(d.amount)),
+    el('td', { class: 'small ' + (d.repaid_at ? 'badge-repaid' : 'badge-open'), title: d.repaid_at ? 'Повернуто ' + dateTimeFmt(d.repaid_at) : '' },
+      d.repaid_at ? 'Повернуто' : 'Не повернуто'),
+    authorCell(d),
+    el('td', { class: 'row-actions' }, canEdit() ? [
+      el('button', { class: 'link', onclick: () => setRepaid(d, !d.repaid_at) }, d.repaid_at ? 'Не повернуто' : 'Повернуто'),
+      el('button', { class: 'link', onclick: () => editDebt(d) }, 'Змінити'),
+      el('button', { class: 'link danger', onclick: () => deleteDebt(d) }, 'Видалити'),
+    ] : []),
+  )) : [el('tr', {}, el('td', { colspan: 8, class: 'muted' }, 'Боргів не знайдено.'))]));
+}
+async function refreshDebts() { await Promise.all([loadDebtSummary(), loadDebts()]); }
+async function setRepaid(d, repaid) {
+  if (repaid && !confirm(`Позначити, що ${d.debtor} повернув ${d.creditor} ${money(d.amount)}?`)) return;
+  try { await api(`/api/debts/${d.id}/repaid`, { method: 'POST', body: { repaid } }); }
+  catch (err) { alert(err.message); return; }
+  await refreshDebts();
+}
+function resetDebtForm() {
+  editingDebtId = null;
+  debtForm.reset();
+  debtForm.date.value = today();
+  $('#debt-form-title').textContent = 'Новий борг';
+  $('#debt-submit').textContent = 'Додати';
+  $('#debt-cancel').hidden = true;
+  $('#debt-error').textContent = '';
+}
+$('#debt-cancel').addEventListener('click', resetDebtForm);
+function editDebt(d) {
+  editingDebtId = d.id;
+  debtForm.date.value = d.date;
+  debtForm.debtor.value = d.debtor;
+  debtForm.creditor.value = d.creditor;
+  debtForm.amount.value = amountText(d.amount);
+  debtForm.note.value = d.note ?? '';
+  $('#debt-form-title').textContent = 'Редагування боргу';
+  $('#debt-submit').textContent = 'Зберегти';
+  $('#debt-cancel').hidden = false;
+  debtForm.scrollIntoView({ behavior: 'smooth' });
+  debtForm.amount.focus();
+}
+async function deleteDebt(d) {
+  if (!confirm(`Видалити борг: ${d.debtor} → ${d.creditor}, ${money(d.amount)}?`)) return;
+  try { await api('/api/debts/' + d.id, { method: 'DELETE' }); } catch (err) { alert(err.message); return; }
+  if (editingDebtId === d.id) resetDebtForm();
+  await refreshDebts();
+}
+debtForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#debt-error').textContent = '';
+  const body = { date: debtForm.date.value, debtor: debtForm.debtor.value, creditor: debtForm.creditor.value,
+    amount: debtForm.amount.value, note: debtForm.note.value };
+  try {
+    if (editingDebtId) await api('/api/debts/' + editingDebtId, { method: 'PUT', body });
+    else await api('/api/debts', { method: 'POST', body });
+    const keepDate = debtForm.date.value;
+    resetDebtForm();
+    debtForm.date.value = keepDate;
+    await refreshDebts();
+  } catch (err) { $('#debt-error').textContent = err.message; }
+});
+let debtTimer;
+$('#d-status').addEventListener('change', loadDebts);
+$('#d-person').addEventListener('input', () => { clearTimeout(debtTimer); debtTimer = setTimeout(loadDebts, 300); });
+
+function pexpQuery() {
+  const p = new URLSearchParams();
+  if ($('#pe-from').value) p.set('from', $('#pe-from').value);
+  if ($('#pe-to').value) p.set('to', $('#pe-to').value);
+  if ($('#pe-person').value.trim()) p.set('person', $('#pe-person').value.trim());
+  return p.toString();
+}
+async function loadPersonalExpenses() {
+  const rows = await api('/api/personal-expenses?' + pexpQuery());
+  addPeople(...rows.map((r) => r.person));
+  const byPerson = new Map();
+  let total = 0;
+  for (const r of rows) {
+    total += r.amount;
+    const k = r.person.toLocaleLowerCase('uk');
+    const cur = byPerson.get(k) || { name: r.person, sum: 0 };
+    cur.sum += r.amount;
+    byPerson.set(k, cur);
+  }
+  $('#pexp-totals').textContent = rows.length
+    ? `Разом ${money(total)}: ` + [...byPerson.values()].sort((a, b) => b.sum - a.sum).map((p) => `${p.name} ${money(p.sum)}`).join(' · ')
+    : 'Особистих витрат не знайдено.';
+  $('#pexp-body').replaceChildren(...rows.map((r) => el('tr', {},
+    el('td', { class: 'nowrap' }, dateFmt(r.date)),
+    el('td', {}, r.person),
+    seesAccounts() ? el('td', { class: 'desc' }, r.note) : '',
+    el('td', { class: 'num nowrap expense' }, money(r.amount)),
+    authorCell(r),
+    el('td', { class: 'row-actions' }, canEdit() ? [
+      el('button', { class: 'link', onclick: () => editPexp(r) }, 'Змінити'),
+      el('button', { class: 'link danger', onclick: () => deletePexp(r) }, 'Видалити'),
+    ] : []),
+  )));
+}
+function resetPexpForm() {
+  editingPexpId = null;
+  pexpForm.reset();
+  pexpForm.date.value = today();
+  $('#pexp-form-title').textContent = 'Нова особиста витрата';
+  $('#pexp-submit').textContent = 'Додати';
+  $('#pexp-cancel').hidden = true;
+  $('#pexp-error').textContent = '';
+}
+$('#pexp-cancel').addEventListener('click', resetPexpForm);
+function editPexp(r) {
+  editingPexpId = r.id;
+  pexpForm.date.value = r.date;
+  pexpForm.person.value = r.person;
+  pexpForm.amount.value = amountText(r.amount);
+  pexpForm.note.value = r.note ?? '';
+  $('#pexp-form-title').textContent = 'Редагування особистої витрати';
+  $('#pexp-submit').textContent = 'Зберегти';
+  $('#pexp-cancel').hidden = false;
+  pexpForm.scrollIntoView({ behavior: 'smooth' });
+  pexpForm.amount.focus();
+}
+async function deletePexp(r) {
+  if (!confirm(`Видалити особисту витрату ${r.person} на ${money(r.amount)}?`)) return;
+  try { await api('/api/personal-expenses/' + r.id, { method: 'DELETE' }); } catch (err) { alert(err.message); return; }
+  if (editingPexpId === r.id) resetPexpForm();
+  await loadPersonalExpenses();
+}
+pexpForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#pexp-error').textContent = '';
+  const body = { date: pexpForm.date.value, person: pexpForm.person.value, amount: pexpForm.amount.value, note: pexpForm.note.value };
+  try {
+    if (editingPexpId) await api('/api/personal-expenses/' + editingPexpId, { method: 'PUT', body });
+    else await api('/api/personal-expenses', { method: 'POST', body });
+    const keepDate = pexpForm.date.value;
+    resetPexpForm();
+    pexpForm.date.value = keepDate;
+    await loadPersonalExpenses();
+  } catch (err) { $('#pexp-error').textContent = err.message; }
+});
+let pexpTimer;
+['#pe-from', '#pe-to'].forEach((s) => $(s).addEventListener('change', loadPersonalExpenses));
+$('#pe-person').addEventListener('input', () => { clearTimeout(pexpTimer); pexpTimer = setTimeout(loadPersonalExpenses, 300); });
 
 // ---------- Звіт ----------
 function setPeriod(kind) {

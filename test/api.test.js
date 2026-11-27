@@ -160,6 +160,68 @@ test('створення користувачів і перевірка прав
   assert.ok(log.some((r) => r.action === 'Видалення операції' && r.user_name.includes('editor1')));
 });
 
+test('особисті борги й витрати: окремо від коштів роти, права за ролями', async () => {
+  const before = (await admin('GET', '/api/summary')).data.total;
+
+  // Борги: Іван винен Петру 1000, Петро винен Івану 300, Олег винен Петру 200.
+  assert.equal((await admin('POST', '/api/debts', { date: '2026-11-20', debtor: 'Іван', creditor: 'Петро', amount: '1000', note: 'на ремонт авто' })).status, 201);
+  assert.equal((await editor('POST', '/api/debts', { date: '2026-11-21', debtor: 'петро', creditor: ' Іван ', amount: '300' })).status, 201);
+  const oleg = (await admin('POST', '/api/debts', { date: '2026-11-22', debtor: 'Олег', creditor: 'Петро', amount: '200,50' })).data.id;
+  assert.equal((await admin('POST', '/api/debts', { date: '2026-11-22', debtor: 'Олег', creditor: 'олег', amount: '1' })).status, 400);
+  assert.equal((await admin('POST', '/api/debts', { date: '2026-11-22', debtor: 'Олег', creditor: 'Петро', amount: '0' })).status, 400);
+  assert.equal((await admin('POST', '/api/debts', { date: '2026-11-22', debtor: '', creditor: 'Петро', amount: '5' })).status, 400);
+
+  let s = (await viewer('GET', '/api/debts/summary')).data;
+  assert.deepEqual(s.pairs.map((p) => [p.debtor, p.creditor, p.amount]), [['Іван', 'Петро', 70000], ['Олег', 'Петро', 20050]]);
+  assert.equal(s.total, 90050);
+  const petro = s.balances.find((b) => b.name === 'Петро');
+  assert.deepEqual([petro.owed, petro.owes, petro.net], [120050, 30000, 90050]);
+  assert.equal(s.balances.find((b) => b.name === 'Олег').net, -20050);
+
+  // Позначити повернутим — зникає з підсумку; можна повернути в активні.
+  assert.equal((await viewer('POST', `/api/debts/${oleg}/repaid`, { repaid: true })).status, 403);
+  assert.equal((await editor('POST', `/api/debts/${oleg}/repaid`, { repaid: true })).status, 200);
+  s = (await admin('GET', '/api/debts/summary')).data;
+  assert.equal(s.total, 70000);
+  assert.equal((await admin('GET', '/api/debts?status=repaid')).data.length, 1);
+  assert.equal((await admin('GET', '/api/debts?status=open')).data.length, 2);
+  assert.equal((await admin('GET', '/api/debts?person=' + encodeURIComponent('олег'))).data.length, 1);
+  assert.equal((await admin('POST', `/api/debts/${oleg}/repaid`, { repaid: false })).status, 200);
+  assert.equal((await admin('GET', '/api/debts/summary')).data.total, 90050);
+
+  // Зміна і видалення.
+  const d = (await admin('GET', '/api/debts?person=' + encodeURIComponent('Олег'))).data[0];
+  assert.equal((await editor('PUT', `/api/debts/${d.id}`, { ...d, amount: '250' })).status, 200);
+  assert.equal((await admin('GET', '/api/debts/summary')).data.total, 95000);
+  assert.equal((await viewer('DELETE', `/api/debts/${d.id}`)).status, 403);
+  assert.equal((await admin('DELETE', `/api/debts/${d.id}`)).status, 200);
+  assert.equal((await admin('DELETE', `/api/debts/${d.id}`)).status, 404);
+
+  // Особисті витрати.
+  assert.equal((await editor('POST', '/api/personal-expenses', { date: '2026-11-23', person: 'Іван', amount: '450', note: 'берці' })).status, 201);
+  assert.equal((await admin('POST', '/api/personal-expenses', { date: '2026-11-24', person: 'Петро', amount: '120' })).status, 201);
+  assert.equal((await viewer('POST', '/api/personal-expenses', { date: '2026-11-24', person: 'Петро', amount: '120' })).status, 403);
+  assert.equal((await admin('POST', '/api/personal-expenses', { date: 'вчора', person: 'Петро', amount: '120' })).status, 400);
+  assert.equal((await admin('GET', '/api/personal-expenses?person=' + encodeURIComponent('іван'))).data.length, 1);
+  assert.equal((await admin('GET', '/api/personal-expenses?from=2026-11-24')).data.length, 1);
+  const pe = (await admin('GET', '/api/personal-expenses?person=' + encodeURIComponent('Петро'))).data[0];
+  assert.equal((await editor('PUT', `/api/personal-expenses/${pe.id}`, { ...pe, amount: '150' })).status, 200);
+  assert.equal((await editor('DELETE', `/api/personal-expenses/${pe.id}`)).status, 200);
+
+  // Глядач бачить імена й суми, але не примітки.
+  const vd = (await viewer('GET', '/api/debts')).data;
+  assert.ok(vd.length > 0 && vd.every((r) => !('note' in r)));
+  const vpe = (await viewer('GET', '/api/personal-expenses')).data;
+  assert.ok(vpe.length > 0 && vpe.every((r) => !('note' in r)));
+  assert.equal((await admin('GET', '/api/debts')).data.find((r) => r.debtor === 'Іван').note, 'на ремонт авто');
+
+  // Загальний баланс роти не змінився.
+  assert.deepEqual((await admin('GET', '/api/summary')).data.total, before);
+  const log = (await admin('GET', '/api/audit')).data;
+  assert.ok(log.some((r) => r.action === 'Борг повернуто'));
+  assert.ok(log.some((r) => r.action === 'Нова особиста витрата'));
+});
+
 test('вимкнення користувача завершує його сесію; останнього адміна не вимкнути', async () => {
   const users = (await admin('GET', '/api/users')).data;
   const v = users.find((u) => u.login === 'viewer1');

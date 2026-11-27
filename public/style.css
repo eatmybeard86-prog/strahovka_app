@@ -98,7 +98,10 @@ button.danger { color: var(--expense); }
   padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
-.brand { color: var(--accent); font-size: 1.05rem; }
+.brand { color: var(--accent); font-size: 1.05rem; display: inline-flex; align-items: center; gap: 8px; }
+.brand-logo { width: 32px; height: 32px; flex: none; }
+.login-logo { width: 96px; height: 96px; align-self: center; margin-bottom: -6px; }
+.login-card h1, .login-card > p.muted { text-align: center; }
 .tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
 .tabs button { background: none; color: var(--muted); }
 .tabs button.active { background: var(--bg); color: var(--text); font-weight: 600; }
@@ -186,3 +189,10 @@ label.check input { width: auto; min-height: 0; }
 .section-title { margin: 8px 0 -4px; font-size: 1.05rem; }
 .kpi-note { font-size: .85rem; color: var(--muted); }
 table.data tfoot tr.sub th { font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--border); }
+
+/* Особисте: дві таблиці поруч на широкому екрані */
+.two-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; }
+.two-col > div { min-width: 0; }
+@media (min-width: 900px) { .two-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.badge-open { color: var(--expense); }
+.badge-repaid { color: var(--income); }
