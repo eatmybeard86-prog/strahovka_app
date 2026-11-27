@@ -1,0 +1,68 @@
+# Збирає Android-додаток (android/) і на гілці main публікує APK у GitHub Releases.
+# Посилання на найновішу версію:
+# https://github.com/eatmybeard86-prog/strahovka_app/releases/latest/download/skrynya.apk
+name: Android APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Ключ підпису (якщо задано секрети)
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/skrynya.jks"
+            echo "SIGNING_KEYSTORE=$RUNNER_TEMP/skrynya.jks" >> "$GITHUB_ENV"
+            echo "Підписую постійним ключем."
+          else
+            echo "::warning::Секрет SIGNING_KEYSTORE_BASE64 не задано: APK підписано тимчасовим ключем, оновлення потребуватиме перевстановлення."
+          fi
+
+      - name: Збірка APK
+        working-directory: android
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease -PversionCode=${{ github.run_number }}
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/skrynya.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skrynya-apk
+          path: skrynya.apk
+
+      - name: Реліз
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="android-1.0.${{ github.run_number }}"
+          gh release create "$tag" skrynya.apk \
+            --target "${{ github.sha }}" \
+            --title "Скриня для Android 1.0.${{ github.run_number }}" \
+            --notes "Встановіть skrynya.apk на телефон (дозвольте встановлення з цього джерела). Вхід тим самим логіном і паролем, що й на сайті." \
+            --latest
