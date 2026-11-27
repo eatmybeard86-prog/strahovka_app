@@ -760,7 +760,7 @@ async function api(req, res, url) {
 
 // ---------- Статичні файли ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.png': 'image/png' };
 function serveStatic(res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.slice(1);
   const file = path.normalize(path.join(PUBLIC_DIR, rel));

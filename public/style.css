@@ -98,7 +98,10 @@ button.danger { color: var(--expense); }
   padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
-.brand { color: var(--accent); font-size: 1.05rem; }
+.brand { color: var(--accent); font-size: 1.05rem; display: inline-flex; align-items: center; gap: 8px; }
+.brand-logo { width: 32px; height: 32px; flex: none; }
+.login-logo { width: 96px; height: 96px; align-self: center; margin-bottom: -6px; }
+.login-card h1, .login-card > p.muted { text-align: center; }
 .tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
 .tabs button { background: none; color: var(--muted); }
 .tabs button.active { background: var(--bg); color: var(--text); font-weight: 600; }
