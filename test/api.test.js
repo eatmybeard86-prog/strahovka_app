@@ -163,6 +163,21 @@ test('створення користувачів і перевірка прав
 test('особисті борги й витрати: окремо від коштів роти, права за ролями', async () => {
   const before = (await admin('GET', '/api/summary')).data.total;
 
+  // Доступ до «Особисте» за замовчуванням закритий для всіх, крім адміністратора.
+  assert.equal((await editor('GET', '/api/session')).data.user.personal, false);
+  assert.equal((await viewer('GET', '/api/debts/summary')).status, 403);
+  assert.equal((await editor('POST', '/api/debts', { date: '2026-11-20', debtor: 'А', creditor: 'Б', amount: '1' })).status, 403);
+  assert.equal((await editor('GET', '/api/personal-expenses')).status, 403);
+  assert.equal((await admin('GET', '/api/session')).data.user.personal, true);
+  const ids = Object.fromEntries((await admin('GET', '/api/users')).data.map((u) => [u.login, u]));
+  assert.equal(ids.viewer1.personal, false);
+  assert.equal((await viewer('PUT', `/api/users/${ids.viewer1.id}`, { personal: true })).status, 403);
+  for (const login of ['editor1', 'viewer1']) {
+    assert.equal((await admin('PUT', `/api/users/${ids[login].id}`, { personal: true })).status, 200);
+  }
+  assert.equal((await viewer('GET', '/api/session')).data.user.personal, true);
+  assert.ok((await admin('GET', '/api/audit')).data.some((r) => r.details.includes('доступ до «Особисте» надано')));
+
   // Борги: Іван винен Петру 1000, Петро винен Івану 300, Олег винен Петру 200.
   assert.equal((await admin('POST', '/api/debts', { date: '2026-11-20', debtor: 'Іван', creditor: 'Петро', amount: '1000', note: 'на ремонт авто' })).status, 201);
   assert.equal((await editor('POST', '/api/debts', { date: '2026-11-21', debtor: 'петро', creditor: ' Іван ', amount: '300' })).status, 201);
@@ -220,6 +235,11 @@ test('особисті борги й витрати: окремо від кош�
   const log = (await admin('GET', '/api/audit')).data;
   assert.ok(log.some((r) => r.action === 'Борг повернуто'));
   assert.ok(log.some((r) => r.action === 'Нова особиста витрата'));
+
+  // Адміністратор закриває доступ — сервер одразу відмовляє.
+  const vid = (await admin('GET', '/api/users')).data.find((u) => u.login === 'viewer1').id;
+  assert.equal((await admin('PUT', `/api/users/${vid}`, { personal: false })).status, 200);
+  assert.equal((await viewer('GET', '/api/debts')).status, 403);
 });
 
 test('вимкнення користувача завершує його сесію; останнього адміна не вимкнути', async () => {

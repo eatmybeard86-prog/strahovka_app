@@ -151,15 +151,19 @@ async function currentSession(req) {
   const token = getCookie(req, 'sid');
   if (!token) return null;
   const u = await realDb.get(`
-    SELECT u.id, u.login, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
+    SELECT u.id, u.login, u.name, u.role, u.personal_access FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.active = 1`, [tokenHash(token), Date.now()]);
-  if (u) return { user: { ...u, categories: await allowedCategories(u) }, db: realDb, decoy: false };
+  if (u) {
+    const { personal_access: pa, ...rest } = u;
+    const user = { ...rest, personal: u.role === 'admin' || Boolean(pa), categories: await allowedCategories(u) };
+    return { user, db: realDb, decoy: false };
+  }
   const sos = await realDb.get('SELECT login FROM sos_sessions WHERE token_hash = $1 AND expires_at > $2',
     [tokenHash(token), Date.now()]);
   if (!sos) return null;
   const d = await decoyDatabase();
   const du = await decoyUser(d, sos.login);
-  return du ? { user: { ...du, categories: null }, db: d, decoy: true } : null;
+  return du ? { user: { ...du, personal: true, categories: null }, db: d, decoy: true } : null;
 }
 function getCookie(req, name) {
   const header = req.headers.cookie || '';
@@ -426,10 +430,11 @@ async function activeAdmins(exceptId = 0) {
   return (await db.get("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND id != $1", [exceptId])).n;
 }
 async function listUsers() {
-  const users = await db.all('SELECT id, login, name, role, active, created_at FROM users ORDER BY active DESC, name');
+  const users = await db.all('SELECT id, login, name, role, active, personal_access, created_at FROM users ORDER BY active DESC, name');
   const links = await db.all('SELECT user_id, category_id FROM user_categories');
-  return users.map((u) => ({
+  return users.map(({ personal_access: pa, ...u }) => ({
     ...u,
+    personal: u.role === 'admin' || Boolean(pa),
     categories: u.role === 'editor' ? links.filter((l) => l.user_id === u.id).map((l) => l.category_id) : [],
   }));
 }
@@ -736,7 +741,11 @@ async function authedApi(req, res, url, user) {
     });
   }
 
-  // Особисті борги: переглядають усі, вносять і змінюють — адміністратор і редактор.
+  // Розділ «Особисте» відкритий адміністратору і тим, кому адміністратор дозволив доступ.
+  if (p.startsWith('/api/debts') || p.startsWith('/api/personal-expenses')) {
+    if (!user.personal) throw new HttpError(403, 'Немає доступу до розділу «Особисте»');
+  }
+  // Особисті борги: переглядають ті, хто має доступ; вносять і змінюють — адміністратор і редактор.
   if (p === '/api/debts' && m === 'GET') {
     const q = url.searchParams;
     const f = personalFilters(q);
@@ -837,10 +846,11 @@ async function authedApi(req, res, url, user) {
     if (!ROLES[body.role]) throw new HttpError(400, 'Оберіть роль');
     validatePassword(body.password);
     if (await db.get('SELECT 1 AS x FROM users WHERE login = $1', [login])) throw new HttpError(409, 'Такий логін уже зайнятий');
-    const r = await db.get('INSERT INTO users (login, name, role, password_hash) VALUES ($1, $2, $3, $4) RETURNING id',
-      [login, name, body.role, hashPassword(body.password)]);
+    const r = await db.get(`INSERT INTO users (login, name, role, password_hash, personal_access)
+      VALUES ($1, $2, $3, $4, $5) RETURNING id`, [login, name, body.role, hashPassword(body.password), body.personal ? 1 : 0]);
     if (body.role === 'editor') await setUserCategories(r.id, body.categories);
-    await audit(user, 'Новий користувач', `${name} (${login}), роль: ${ROLES[body.role]}`);
+    const pers = body.role !== 'admin' && body.personal ? ', доступ до «Особисте»' : '';
+    await audit(user, 'Новий користувач', `${name} (${login}), роль: ${ROLES[body.role]}${pers}`);
     return send(res, 201, { id: r.id });
   }
   mm = p.match(/^\/api\/users\/(\d+)$/);
@@ -855,17 +865,22 @@ async function authedApi(req, res, url, user) {
     const role = body.role === undefined ? target.role : body.role;
     if (!ROLES[role]) throw new HttpError(400, 'Оберіть роль');
     const active = body.active === undefined ? target.active : (body.active ? 1 : 0);
+    const personal = body.personal === undefined ? target.personal_access : (body.personal ? 1 : 0);
     if (body.password) { validatePassword(body.password); await rejectSosPassword(body.password); }
     if (target.role === 'admin' && target.active && (role !== 'admin' || !active) && (await activeAdmins(id)) === 0) {
       throw new HttpError(409, 'Має залишитися хоча б один активний адміністратор');
     }
-    await db.run('UPDATE users SET name = $1, role = $2, active = $3 WHERE id = $4', [name, role, active, id]);
+    await db.run('UPDATE users SET name = $1, role = $2, active = $3, personal_access = $4 WHERE id = $5',
+      [name, role, active, personal, id]);
     if (role === 'editor' && body.categories !== undefined) await setUserCategories(id, body.categories);
     if (role !== 'editor') await setUserCategories(id, []);
     const changes = [];
     if (name !== target.name) changes.push(`ім’я: ${name}`);
     if (role !== target.role) changes.push(`роль: ${ROLES[role]}`);
     if (active !== target.active) changes.push(active ? 'увімкнено' : 'вимкнено');
+    if (personal !== target.personal_access && role !== 'admin') {
+      changes.push(personal ? 'доступ до «Особисте» надано' : 'доступ до «Особисте» закрито');
+    }
     if (body.password) {
       await db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [hashPassword(body.password), id]);
       changes.push('новий пароль');

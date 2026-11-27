@@ -25,6 +25,7 @@ const SQLITE_SCHEMA = `
     role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
     password_hash TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    personal_access INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS accounts (
@@ -120,6 +121,7 @@ const PG_SCHEMA = `
     role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
     password_hash TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
+    personal_access INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT ${PG_NOW}
   );
   CREATE TABLE IF NOT EXISTS accounts (
@@ -212,6 +214,9 @@ function openSqlite(dataDir, memory = false) {
   if (!cols.includes('updated_by')) db.exec('ALTER TABLE transactions ADD COLUMN updated_by INTEGER REFERENCES users(id)');
   // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
   if (!cols.includes('account_id')) db.exec('ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES accounts(id)');
+  // Доступ до розділу «Особисте» (адміністратор має його завжди, іншим вмикає адміністратор).
+  const ucols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!ucols.includes('personal_access')) db.exec('ALTER TABLE users ADD COLUMN personal_access INTEGER NOT NULL DEFAULT 0');
 
   const prep = (sql) => db.prepare(sql.replace(/\$(\d+)/g, '?$1'));
   const plain = (rows) => rows.map((r) => ({ ...r }));
@@ -240,6 +245,8 @@ async function openPostgres(url) {
   await pool.query(PG_SCHEMA);
   // Рахунок / місце зберігання коштів (додано пізніше; у старих записів може бути порожнім).
   await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id)');
+  // Доступ до розділу «Особисте» (адміністратор має його завжди, іншим вмикає адміністратор).
+  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_access INTEGER NOT NULL DEFAULT 0');
   return {
     kind: 'postgres',
     like: 'ILIKE',
