@@ -29,6 +29,13 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || process.env.APP_PASSWORD ||
 const ROLES = { admin: 'Адміністратор', editor: 'Редактор', viewer: 'Лише перегляд' };
 const ACCOUNT_KINDS = { cash: 'Готівка', cashless: 'Безготівка' };
 const DEFAULT_ACCOUNTS = [['Каса', 'cash'], ['Банківський рахунок', 'cashless']];
+// Фото чеків: сторінка стискає їх до ~100–250 КБ; сервер приймає щонайбільше 1 МБ на фото.
+const MAX_RECEIPTS = 5;
+const MAX_RECEIPT_BYTES = 1024 * 1024;
+const RECEIPT_MIME = {
+  'image/jpeg': (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/webp': (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
+};
 const DEFAULT_CATEGORIES = [
   'Пальне та мастила', 'Харчування', 'Ремонт техніки', 'Засоби зв’язку',
   'Медицина', 'Спорядження та обмундирування', 'Фортифікація та будматеріали',
@@ -247,6 +254,17 @@ async function readJson(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
   catch { throw new HttpError(400, 'Некоректний JSON'); }
 }
+// Тіло запиту як є (фото чека). Стискає фото сама сторінка, сервер лише обмежує розмір.
+async function readBinary(req, max) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > max) throw new HttpError(413, 'Фото завелике');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function isDate(s) {
   return typeof s === 'string' && DATE_RE.test(s) && !Number.isNaN(Date.parse(s + 'T00:00:00Z'));
@@ -331,7 +349,8 @@ function listTx(q, limited = false) {
     SELECT t.id, t.date, t.type, t.amount, t.category_id, c.name AS category,
            t.account_id, a.name AS account, a.kind AS account_kind,
            t.counterparty, t.spent_by, t.description, t.created_at, t.updated_at,
-           cu.name AS created_by_name, uu.name AS updated_by_name
+           cu.name AS created_by_name, uu.name AS updated_by_name,
+           (SELECT COUNT(*) FROM receipts r WHERE r.transaction_id = t.id) AS receipts
     FROM transactions t
     JOIN categories c ON c.id = t.category_id
     LEFT JOIN accounts a ON a.id = t.account_id
@@ -714,6 +733,48 @@ async function authedApi(req, res, url, user) {
       [t.date, t.type, t.amount, t.category_id, t.account_id, t.counterparty, t.spent_by, t.description, user.id, now]);
     await audit(user, 'Нова операція', await txLabel(t));
     return send(res, 201, { id: r.id });
+  }
+  // Фото чеків до витрат: переглядають усі, додають і видаляють — адміністратор і редактор
+  // (з доступом до категорії операції). У SOS-сесії працює база-приманка, де справжніх фото немає.
+  mm = p.match(/^\/api\/transactions\/(\d+)\/receipts$/);
+  if (mm) {
+    const tx = await db.get('SELECT * FROM transactions WHERE id = $1', [toId(mm[1])]);
+    if (!tx) throw new HttpError(404, 'Операцію не знайдено');
+    if (m === 'GET') {
+      return send(res, 200, await db.all(`SELECT r.id, r.size, r.created_at, u.name AS created_by_name
+        FROM receipts r LEFT JOIN users u ON u.id = r.created_by WHERE r.transaction_id = $1 ORDER BY r.id`, [tx.id]));
+    }
+    if (m === 'POST') {
+      requireRole(user, 'admin', 'editor');
+      requireCategory(user, tx.category_id);
+      if (tx.type !== 'expense') throw new HttpError(400, 'Фото чека можна додати лише до витрати');
+      const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+      if (!RECEIPT_MIME[mime]) throw new HttpError(415, 'Підтримуються фото JPEG або WebP');
+      const n = (await db.get('SELECT COUNT(*) AS n FROM receipts WHERE transaction_id = $1', [tx.id])).n;
+      if (n >= MAX_RECEIPTS) throw new HttpError(400, `До однієї витрати можна додати не більше ${MAX_RECEIPTS} фото`);
+      const data = await readBinary(req, MAX_RECEIPT_BYTES);
+      if (!RECEIPT_MIME[mime](data)) throw new HttpError(400, 'Файл не схожий на фото');
+      const r = await db.get(`INSERT INTO receipts (transaction_id, mime, size, data, created_by, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [tx.id, mime, data.length, data, user.id, nowText()]);
+      await audit(user, 'Додано фото чека', `${await txLabel(tx)} (${Math.round(data.length / 1024)} КБ)`);
+      return send(res, 201, { id: r.id });
+    }
+  }
+  mm = p.match(/^\/api\/receipts\/(\d+)$/);
+  if (mm) {
+    const r = await db.get(`SELECT r.id, r.mime, r.data, r.transaction_id, t.category_id
+      FROM receipts r JOIN transactions t ON t.id = r.transaction_id WHERE r.id = $1`, [toId(mm[1])]);
+    if (!r) throw new HttpError(404, 'Фото не знайдено');
+    // no-store: щоб після входу з SOS-паролем браузер не показав із кешу справжнє фото з тим самим номером.
+    if (m === 'GET') return send(res, 200, Buffer.from(r.data), { 'Content-Type': r.mime });
+    if (m === 'DELETE') {
+      requireRole(user, 'admin', 'editor');
+      requireCategory(user, r.category_id);
+      await db.run('DELETE FROM receipts WHERE id = $1', [r.id]);
+      const tx = await db.get('SELECT * FROM transactions WHERE id = $1', [r.transaction_id]);
+      await audit(user, 'Видалено фото чека', await txLabel(tx));
+      return send(res, 200, { ok: true });
+    }
   }
   mm = p.match(/^\/api\/transactions\/(\d+)$/);
   if (mm) {

@@ -1,5 +1,6 @@
 'use strict';
 // settings — налаштування (зокрема хеш SOS-пароля), sos_sessions — сесії входу з SOS-паролем.
+// receipts — стиснені фото чеків до витрат (зберігаються в самій базі, щоб пережити перезапуск сервера).
 // Особисті борги (debts) і особисті витрати (personal_expenses) — окремі таблиці,
 // вони не впливають на загальний баланс роти. Міграція лише додає нові таблиці (CREATE IF NOT EXISTS).
 // Сховище даних: PostgreSQL, якщо задано DATABASE_URL (наприклад, безкоштовна база Neon),
@@ -104,6 +105,16 @@ const SQLITE_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
   CREATE INDEX IF NOT EXISTS idx_debts_date ON debts(date);
   CREATE INDEX IF NOT EXISTS idx_pexp_date ON personal_expenses(date);
+  CREATE TABLE IF NOT EXISTS receipts (
+    id INTEGER PRIMARY KEY,
+    transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts(transaction_id);
 `;
 
 // Час зберігається як текст «YYYY-MM-DD HH:MM:SS» в UTC в обох базах.
@@ -203,6 +214,16 @@ const PG_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
   CREATE INDEX IF NOT EXISTS idx_debts_date ON debts(date);
   CREATE INDEX IF NOT EXISTS idx_pexp_date ON personal_expenses(date);
+  CREATE TABLE IF NOT EXISTS receipts (
+    id SERIAL PRIMARY KEY,
+    transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BYTEA NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT ${PG_NOW}
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts(transaction_id);
 `;
 
 function openSqlite(dataDir, memory = false) {

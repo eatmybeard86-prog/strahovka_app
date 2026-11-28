@@ -89,6 +89,7 @@ window.addEventListener('pageshow', checkIdle);
 
 // ---------- Вхід / вихід ----------
 function showLogin() {
+  if ($('#receipt-dialog').open) $('#receipt-dialog').close();
   me = null;
   $('#app-view').hidden = true;
   $('#login-view').hidden = false;
@@ -288,6 +289,7 @@ function updateCpLabel() {
   $('#cp-label').textContent = income ? 'Від кого (джерело)' : 'Кому / постачальник';
   $('#spent-by-field').hidden = income;
   $('#acc-label').textContent = income ? 'На рахунок (куди надійшло)' : 'З рахунку (звідки витрачено)';
+  $('#receipts-field').hidden = income;
 }
 txForm.querySelectorAll('[name=type]').forEach((r) => r.addEventListener('change', updateCpLabel));
 
@@ -299,6 +301,8 @@ function resetTxForm() {
   $('#tx-submit').textContent = 'Додати';
   $('#tx-cancel').hidden = true;
   $('#tx-error').textContent = '';
+  receiptItems = [];
+  renderReceiptThumbs();
   renderCategorySelects();
   renderAccountSelects();
   updateCpLabel();
@@ -313,18 +317,163 @@ txForm.addEventListener('submit', async (e) => {
     category_id: txForm.category_id.value, account_id: txForm.account_id.value, counterparty: txForm.counterparty.value,
     spent_by: txForm.spent_by.value, description: txForm.description.value,
   };
+  if (receiptsBusy) { $('#tx-error').textContent = 'Зачекайте, фото ще стискається…'; return; }
+  const submitBtn = $('#tx-submit');
+  submitBtn.disabled = true;
   try {
+    let id = editingId;
     if (editingId) await api('/api/transactions/' + editingId, { method: 'PUT', body });
-    else await api('/api/transactions', { method: 'POST', body });
+    else id = (await api('/api/transactions', { method: 'POST', body })).id;
+    // Нові фото чеків завантажуємо після збереження операції (лише до витрат).
+    const pending = body.type === 'expense' ? receiptItems.filter((r) => r.blob) : [];
+    let failed = '';
+    for (const r of pending) {
+      try { await uploadReceipt(id, r.blob); } catch (err) { failed = err.message; }
+    }
     const keepDate = txForm.date.value;
     const keepType = txForm.type.value;
     resetTxForm();
     txForm.date.value = keepDate;
     txForm.type.value = keepType;
     updateCpLabel();
+    if (failed) $('#tx-error').textContent = `Операцію збережено, але не всі фото чеків завантажились: ${failed}. Відкрийте «Змінити» й додайте їх ще раз.`;
     await Promise.all([loadTransactions(), loadCategories()]);
   } catch (err) { $('#tx-error').textContent = err.message; }
+  finally { submitBtn.disabled = false; }
 });
+
+// ---------- Фото чеків ----------
+// Фото стискається тут, на телефоні, ще до відправки: менша сторона до 1200 px, довша до 1600 px
+// (дрібний текст чека лишається читабельним), JPEG; якщо вийшло понад ~250 КБ — стискаємо сильніше.
+const MAX_RECEIPTS = 5;
+const RECEIPT_TARGET = 250 * 1024;
+let receiptItems = []; // { id } — уже збережене, { blob, url } — ще не відправлене
+let receiptsBusy = false;
+
+async function decodeImage(file) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* запасний шлях нижче */ }
+  }
+  const url = await blobToDataUrl(file);
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return img;
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Не вдалося прочитати фото'));
+    r.readAsDataURL(blob);
+  });
+}
+const canvasToBlob = (canvas, q) => new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
+async function compressImage(file) {
+  let src;
+  try { src = await decodeImage(file); } catch { throw new Error('Цей файл не вдалося відкрити як фото'); }
+  const w0 = src.width; const h0 = src.height;
+  let scale = Math.min(1, 1600 / Math.max(w0, h0), 1200 / Math.min(w0, h0));
+  let best = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(w0 * scale));
+    canvas.height = Math.max(1, Math.round(h0 * scale));
+    const c = canvas.getContext('2d');
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, canvas.width, canvas.height);
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(src, 0, 0, canvas.width, canvas.height);
+    for (const q of [0.7, 0.55, 0.4]) {
+      best = await canvasToBlob(canvas, q);
+      if (best && best.size <= RECEIPT_TARGET) break;
+    }
+    if (best && best.size <= RECEIPT_TARGET) break;
+    scale *= 0.8;
+  }
+  if (src.close) src.close();
+  if (!best || best.type !== 'image/jpeg') throw new Error('Браузер не зміг стиснути фото');
+  return best;
+}
+const kb = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+function renderReceiptThumbs() {
+  const box = $('#receipt-thumbs');
+  box.replaceChildren(...receiptItems.map((r, i) => el('div', { class: 'receipt-thumb' },
+    el('img', { src: r.url || `/api/receipts/${r.id}`, alt: 'Фото чека', onclick: () => openReceipts(receiptItems.map((x) => x.url || `/api/receipts/${x.id}`)) }),
+    r.blob ? el('span', { class: 'tag' }, `нове · ${kb(r.blob.size)}`) : el('span', { class: 'tag' }, kb(r.size || 0)),
+    el('button', { type: 'button', class: 'remove', title: 'Прибрати фото', onclick: () => removeReceipt(i) }, '✕'),
+  )));
+  $('#receipt-add').hidden = receiptItems.length >= MAX_RECEIPTS;
+  $('#receipt-add').classList.toggle('busy', receiptsBusy);
+  $('#receipt-hint').textContent = receiptsBusy ? 'Стискаю фото…'
+    : 'Фото стискається автоматично (близько 100–250 КБ). До 5 фото на витрату.';
+}
+async function removeReceipt(i) {
+  const r = receiptItems[i];
+  if (r.id) {
+    if (!confirm('Видалити це фото чека?')) return;
+    try { await api('/api/receipts/' + r.id, { method: 'DELETE' }); } catch (err) { alert(err.message); return; }
+    loadTransactions();
+  }
+  receiptItems.splice(i, 1);
+  renderReceiptThumbs();
+}
+$('#receipt-input').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  $('#tx-error').textContent = '';
+  receiptsBusy = true;
+  renderReceiptThumbs();
+  try {
+    for (const f of files) {
+      if (receiptItems.length >= MAX_RECEIPTS) { $('#tx-error').textContent = `До однієї витрати — не більше ${MAX_RECEIPTS} фото.`; break; }
+      try {
+        const blob = await compressImage(f);
+        receiptItems.push({ blob, url: await blobToDataUrl(blob) });
+      } catch (err) { $('#tx-error').textContent = err.message; }
+      renderReceiptThumbs();
+    }
+  } finally {
+    receiptsBusy = false;
+    renderReceiptThumbs();
+  }
+});
+async function uploadReceipt(txId, blob) {
+  const res = await fetch(`/api/transactions/${txId}/receipts`, {
+    method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { showLogin(); throw new Error('Потрібен вхід'); }
+  if (!res.ok) throw new Error(data.error || 'Помилка ' + res.status);
+  return data;
+}
+async function loadTxReceipts(txId) {
+  try {
+    const list = await api(`/api/transactions/${txId}/receipts`);
+    if (editingId !== txId) return;
+    receiptItems = [...list.map((r) => ({ id: r.id, size: r.size })), ...receiptItems.filter((r) => r.blob)];
+    renderReceiptThumbs();
+  } catch (err) { $('#tx-error').textContent = err.message; }
+}
+function openReceipts(urls, title = 'Фото чеків') {
+  $('#receipt-dialog-title').textContent = title;
+  $('#receipt-view').replaceChildren(...urls.map((u) => {
+    const frame = el('div', { class: 'frame' });
+    frame.append(el('img', { src: u, alt: 'Фото чека', onclick: () => frame.classList.toggle('zoomed') }));
+    return frame;
+  }));
+  $('#receipt-dialog').showModal();
+}
+async function showTxReceipts(t) {
+  try {
+    const list = await api(`/api/transactions/${t.id}/receipts`);
+    openReceipts(list.map((r) => `/api/receipts/${r.id}`), `Чеки: ${dateFmt(t.date)}, ${money(t.amount)}`);
+  } catch (err) { alert(err.message); }
+}
+$('#receipt-close').addEventListener('click', () => $('#receipt-dialog').close());
+$('#receipt-dialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+$('#receipt-dialog').addEventListener('close', () => $('#receipt-view').replaceChildren());
 
 function editTx(t) {
   editingId = t.id;
@@ -347,6 +496,9 @@ function editTx(t) {
   $('#tx-form-title').textContent = 'Редагування операції';
   $('#tx-submit').textContent = 'Зберегти';
   $('#tx-cancel').hidden = false;
+  receiptItems = [];
+  renderReceiptThumbs();
+  if (t.receipts) loadTxReceipts(t.id);
   updateCpLabel();
   txForm.scrollIntoView({ behavior: 'smooth' });
   txForm.amount.focus();
@@ -398,7 +550,9 @@ async function loadTransactions() {
       : el('td', { class: t.account_kind ? '' : 'muted' }, t.account_kind ? KINDS[t.account_kind] : 'не вказано'),
     el('td', { class: 'num nowrap ' + t.type }, (t.type === 'income' ? '+' : '−') + money(t.amount)),
     authorCell(t),
-    el('td', { class: 'row-actions' }, canUseCategory(t.category_id) ? [
+    el('td', { class: 'row-actions' }, t.receipts ? el('button', {
+      class: 'link receipt-link', title: 'Переглянути фото чеків', onclick: () => showTxReceipts(t),
+    }, `🧾 ${t.receipts}`) : '', canUseCategory(t.category_id) ? [
       el('button', { class: 'link', onclick: () => editTx(t) }, 'Змінити'),
       el('button', { class: 'link danger', onclick: () => deleteTx(t) }, 'Видалити'),
     ] : []),

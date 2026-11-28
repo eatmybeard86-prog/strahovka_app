@@ -386,3 +386,72 @@ test('автовихід через 5 хвилин без дій (звичайн
   assert.equal((await intruder('GET', '/api/session')).status, 401);
   assert.equal((await admin('DELETE', '/api/sos', { current: 'admin-pass-123' })).status, 200);
 });
+
+test('фото чеків: додати, переглянути, права, SOS-приманка без справжніх фото', async () => {
+  // Окремий запит із «сирим» тілом (фото), з кукі вказаного клієнта.
+  const cookieOf = async (login, password) => {
+    const r = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login, password }) });
+    assert.equal(r.status, 200);
+    return r.headers.get('set-cookie').split(';')[0];
+  };
+  const upload = (cookie, txId, body, type = 'image/jpeg') => fetch(`${base}/api/transactions/${txId}/receipts`,
+    { method: 'POST', headers: { Cookie: cookie, 'Content-Type': type }, body });
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2000, 7)]);
+  const adminCookie = await cookieOf('admin', 'admin-pass-123');
+  const a = client();
+  assert.equal((await a('POST', '/api/login', { login: 'admin', password: 'admin-pass-123' })).status, 200);
+
+  const exp = (await a('POST', '/api/transactions', { account_id: cash, date: '2026-11-20', type: 'expense', amount: '250', category_id: food, description: 'Чек тест' })).data.id;
+  const inc = (await a('POST', '/api/transactions', { account_id: cash, date: '2026-11-20', type: 'income', amount: '250', category_id: food })).data.id;
+
+  const r1 = await upload(adminCookie, exp, jpeg);
+  assert.equal(r1.status, 201);
+  const rid = (await r1.json()).id;
+  assert.equal((await upload(adminCookie, inc, jpeg)).status, 400, 'до надходження фото не додається');
+  assert.equal((await upload(adminCookie, exp, Buffer.from('<svg/>'), 'image/svg+xml')).status, 415);
+  assert.equal((await upload(adminCookie, exp, Buffer.from('not a picture at all'))).status, 400);
+  assert.equal((await upload(adminCookie, exp, Buffer.alloc(1024 * 1024 + 10, 0xff))).status, 413);
+
+  const list = (await a('GET', `/api/transactions/${exp}/receipts`)).data;
+  assert.equal(list.length, 1);
+  assert.equal(list[0].size, jpeg.length);
+  const tx = (await a('GET', '/api/transactions?q=Чек тест')).data.find((t) => t.id === exp);
+  assert.equal(tx.receipts, 1);
+  const img = await fetch(`${base}/api/receipts/${rid}`, { headers: { Cookie: adminCookie } });
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/jpeg');
+  assert.match(img.headers.get('cache-control'), /no-store/);
+  assert.ok(Buffer.from(await img.arrayBuffer()).equals(jpeg));
+  assert.equal((await fetch(`${base}/api/receipts/${rid}`)).status, 401);
+
+  // Не більше 5 фото до однієї витрати.
+  for (let i = 0; i < 4; i++) assert.equal((await upload(adminCookie, exp, jpeg)).status, 201);
+  assert.equal((await upload(adminCookie, exp, jpeg)).status, 400);
+
+  // Глядач бачить фото, але не додає і не видаляє; редактор без доступу до категорії — теж ні.
+  assert.equal((await a('POST', '/api/users', { login: 'viewer2', name: 'Глядач', role: 'viewer', password: 'viewer-pass' })).status, 201);
+  const viewerCookie = await cookieOf('viewer2', 'viewer-pass');
+  assert.equal((await fetch(`${base}/api/receipts/${rid}`, { headers: { Cookie: viewerCookie } })).status, 200);
+  assert.equal((await upload(viewerCookie, exp, jpeg)).status, 403);
+  assert.equal((await fetch(`${base}/api/receipts/${rid}`, { method: 'DELETE', headers: { Cookie: viewerCookie } })).status, 403);
+  const editorCookie = await cookieOf('editor1', 'new-pass-123'); // доступ лише до категорії «Тестова»
+  assert.equal((await upload(editorCookie, exp, jpeg)).status, 403);
+  assert.equal((await fetch(`${base}/api/receipts/${rid}`, { method: 'DELETE', headers: { Cookie: editorCookie } })).status, 403);
+
+  // Журнал фіксує додавання.
+  assert.ok((await a('GET', '/api/audit')).data.some((e) => e.action === 'Додано фото чека'));
+
+  // SOS-приманка: справжніх фото немає, навіть за номером.
+  assert.equal((await a('PUT', '/api/sos', { password: 'sos-pass-555', current: 'admin-pass-123' })).status, 200);
+  const sosCookie = await cookieOf('admin', 'sos-pass-555');
+  assert.equal((await fetch(`${base}/api/receipts/${rid}`, { headers: { Cookie: sosCookie } })).status, 404);
+  const fake = await (await fetch(`${base}/api/transactions`, { headers: { Cookie: sosCookie } })).json();
+  assert.ok(fake.every((t) => t.receipts === 0));
+  assert.equal((await a('DELETE', '/api/sos', { current: 'admin-pass-123' })).status, 200);
+
+  // Видалення фото і видалення операції разом із фото.
+  assert.equal((await a('DELETE', `/api/receipts/${rid}`)).status, 200);
+  assert.equal((await a('GET', `/api/transactions/${exp}/receipts`)).data.length, 4);
+  assert.equal((await a('DELETE', `/api/transactions/${exp}`)).status, 200);
+  assert.equal(Number((await getDb().get('SELECT COUNT(*) AS n FROM receipts')).n), 0);
+});

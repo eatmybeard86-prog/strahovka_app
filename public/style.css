@@ -196,3 +196,28 @@ table.data tfoot tr.sub th { font-weight: 500; color: var(--muted); border-botto
 @media (min-width: 900px) { .two-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .badge-open { color: var(--expense); }
 .badge-repaid { color: var(--income); }
+
+/* Фото чеків */
+.receipts-field { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.field-label { font-size: .88rem; color: var(--muted); }
+.receipt-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.receipt-thumbs:empty { display: none; }
+.receipt-thumb { position: relative; width: 84px; height: 84px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.receipt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.receipt-thumb .remove { position: absolute; top: 2px; right: 2px; min-height: 0; width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, .6); color: #fff; font-size: 14px; line-height: 26px; }
+.receipt-thumb .tag { position: absolute; left: 0; right: 0; bottom: 0; font-size: .7rem; text-align: center; background: rgba(0, 0, 0, .55); color: #fff; padding: 1px 0; }
+.file-button { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: .95rem; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; min-height: 38px; }
+.file-button:hover { border-color: var(--accent); color: var(--accent); }
+.file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; min-height: 0; padding: 0; border: 0; }
+.file-button.busy { opacity: .6; pointer-events: none; }
+button.receipt-link { white-space: nowrap; }
+.receipt-dialog { width: min(900px, calc(100vw - 16px)); max-height: calc(100vh - 32px); padding: 14px; }
+.receipt-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.receipt-dialog-head h2 { margin: 0; }
+.receipt-view { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.receipt-view .frame { overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.receipt-view img { display: block; width: 100%; height: auto; cursor: zoom-in; }
+.receipt-view .frame.zoomed img { width: auto; max-width: none; cursor: zoom-out; }
+.receipt-view .frame.zoomed { max-height: 75vh; }

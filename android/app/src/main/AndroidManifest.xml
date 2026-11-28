@@ -24,5 +24,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Тимчасові знімки чеків з камери (у теці додатку, не в галереї) -->
+        <provider
+            android:name=".PhotoProvider"
+            android:authorities="${applicationId}.photos"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
+
+    <!-- Android 11+: щоб бачити програму «Камера» для знімка чека (дозвіл на камеру не потрібен) -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
 </manifest>
