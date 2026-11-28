@@ -73,6 +73,15 @@
       </form>
     </dialog>
 
+    <dialog id="receipt-dialog" class="receipt-dialog">
+      <div class="receipt-dialog-head">
+        <h2 id="receipt-dialog-title">Фото чеків</h2>
+        <button type="button" class="ghost" id="receipt-close">Закрити</button>
+      </div>
+      <p class="muted small">Торкніться фото, щоб збільшити.</p>
+      <div id="receipt-view" class="receipt-view"></div>
+    </dialog>
+
     <main>
       <!-- Звіт -->
       <section id="tab-summary" class="tab">
@@ -127,6 +136,14 @@
             <label><span id="cp-label">Кому / постачальник</span> <input type="text" name="counterparty" maxlength="200"></label>
           </div>
           <label>Опис <input type="text" name="description" maxlength="1000" placeholder="Що саме, № накладної тощо"></label>
+          <div id="receipts-field" class="receipts-field">
+            <span class="field-label">Фото чеків</span>
+            <div class="receipt-thumbs" id="receipt-thumbs"></div>
+            <label class="ghost file-button" id="receipt-add">📷 Додати фото чека
+              <input type="file" id="receipt-input" accept="image/*" multiple>
+            </label>
+            <span class="muted small" id="receipt-hint">Фото стискається автоматично (близько 100–250 КБ). До 5 фото на витрату.</span>
+          </div>
           <div class="actions">
             <button type="submit" class="primary" id="tx-submit">Додати</button>
             <button type="button" class="ghost" id="tx-cancel" hidden>Скасувати редагування</button>

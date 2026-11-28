@@ -5,6 +5,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.ClipData;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
@@ -26,6 +27,7 @@ import android.webkit.CookieManager;
 import android.webkit.JsPromptResult;
 import android.webkit.JsResult;
 import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -42,6 +44,10 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Обгортка над вебзастосунком «Скриня». Уся логіка, ролі й права лишаються на сервері,
  * тож у додатку доступно все те саме, що й у браузері, з тим самим логіном і паролем.
@@ -50,6 +56,7 @@ public class MainActivity extends Activity {
 
     private static final String APP_URL = BuildConfig.APP_URL;
     private static final int REQ_STORAGE = 1;
+    private static final int REQ_FILE = 2;
 
     private WebView web;
     private View overlay;
@@ -60,6 +67,9 @@ public class MainActivity extends Activity {
 
     private boolean loadFailed;
     private PendingDownload pendingDownload;
+    // Вибір фото чека: куди повернути результат і куди камера пише знімок.
+    private ValueCallback<Uri[]> fileCallback;
+    private File cameraFile;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable slowHint = () -> {
         if (overlay.getVisibility() == View.VISIBLE && !loadFailed) {
@@ -78,6 +88,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        clearPhotos();
         buildUi();
         setupWebView();
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
@@ -284,6 +295,12 @@ public class MainActivity extends Activity {
                 topProgress.setProgress(newProgress);
             }
 
+            // <input type="file"> на сторінці (фото чека): камера або галерея / файли.
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                return openFileChooser(callback, params);
+            }
+
             @Override
             public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
                 new AlertDialog.Builder(MainActivity.this)
@@ -330,6 +347,89 @@ public class MainActivity extends Activity {
         // Експорт у CSV: сервер віддає файл як вкладення, зберігаємо його в «Завантаження».
         web.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) ->
                 startDownload(new PendingDownload(url, userAgent, contentDisposition, mimeType)));
+    }
+
+    // ---------- Фото чеків ----------
+
+    private void clearPhotos() {
+        File[] old = PhotoProvider.dir(this).listFiles();
+        if (old != null) for (File f : old) //noinspection ResultOfMethodCallIgnored
+            f.delete();
+    }
+
+    private boolean openFileChooser(ValueCallback<Uri[]> callback, WebChromeClient.FileChooserParams params) {
+        if (fileCallback != null) fileCallback.onReceiveValue(null);
+        fileCallback = callback;
+        cameraFile = null;
+        clearPhotos();
+
+        Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        boolean images = false;
+        for (String t : params.getAcceptTypes()) if (t != null && t.startsWith("image")) images = true;
+        pick.setType(images ? "image/*" : "*/*");
+        if (params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+            pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+
+        List<Intent> extra = new ArrayList<>();
+        if (images) {
+            // Знімок пишеться у тимчасовий файл додатку (не в галерею); дозвіл на камеру не потрібен.
+            File f = new File(PhotoProvider.dir(this), "receipt_" + System.currentTimeMillis() + ".jpg");
+            Uri out = PhotoProvider.uriFor(f);
+            Intent cam = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            cam.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, out);
+            cam.setClipData(ClipData.newRawUri("", out));
+            cam.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (cam.resolveActivity(getPackageManager()) != null) {
+                extra.add(cam);
+                cameraFile = f;
+            }
+        }
+
+        Intent chooser = Intent.createChooser(pick, images ? "Фото чека" : "Оберіть файл");
+        if (!extra.isEmpty()) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, extra.toArray(new Intent[0]));
+        try {
+            startActivityForResult(chooser, REQ_FILE);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            fileCallback = null;
+            cameraFile = null;
+            Toast.makeText(this, "Немає програми, щоб вибрати фото", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != REQ_FILE) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        ValueCallback<Uri[]> cb = fileCallback;
+        fileCallback = null;
+        if (cb == null) return;
+        Uri[] result = null;
+        if (resultCode == RESULT_OK) {
+            if (cameraFile != null && cameraFile.length() > 0) {
+                result = new Uri[]{PhotoProvider.uriFor(cameraFile)};
+            } else if (data != null) {
+                ClipData clip = data.getClipData();
+                if (clip != null && clip.getItemCount() > 0) {
+                    List<Uri> uris = new ArrayList<>();
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        Uri u = clip.getItemAt(i).getUri();
+                        if (u != null) uris.add(u);
+                    }
+                    if (!uris.isEmpty()) result = uris.toArray(new Uri[0]);
+                } else if (data.getData() != null) {
+                    result = new Uri[]{data.getData()};
+                }
+            }
+        }
+        cameraFile = null;
+        cb.onReceiveValue(result);
     }
 
     private void openExternally(Uri uri) {
